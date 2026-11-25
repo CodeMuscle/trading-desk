@@ -1,0 +1,136 @@
+//@version=5
+strategy("Forex Confluence Auto-Trade Strategy", overlay=true, max_labels_count=500,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     initial_capital=10000, currency=currency.USD)
+
+// ============================================================
+// INPUTS
+// ============================================================
+grpTrend = "Trend (EMA)"
+emaFastLen = input.int(20, "Fast EMA", minval=1, group=grpTrend)
+emaSlowLen = input.int(50, "Slow EMA", minval=1, group=grpTrend)
+emaFilterLen = input.int(200, "Major Trend EMA (bias filter)", minval=1, group=grpTrend)
+
+grpMom = "Momentum (RSI + MACD)"
+rsiLen = input.int(14, "RSI Length", group=grpMom)
+rsiBull = input.int(50, "RSI Bull Threshold", group=grpMom)
+rsiBear = input.int(50, "RSI Bear Threshold", group=grpMom)
+macdFast = input.int(12, "MACD Fast", group=grpMom)
+macdSlow = input.int(26, "MACD Slow", group=grpMom)
+macdSig = input.int(9, "MACD Signal", group=grpMom)
+
+grpPA = "Price Action (Breakout)"
+swingLen = input.int(10, "Swing High/Low Lookback", minval=2, group=grpPA)
+useBreakout = input.bool(true, "Require breakout of recent swing", group=grpPA)
+
+grpFilt = "Signal Filters"
+useTrendFilter = input.bool(true, "Require price above/below 200 EMA (bias filter)", group=grpFilt)
+cooldownBars = input.int(5, "Min bars between signals", minval=0, group=grpFilt)
+
+grpRisk = "Risk Management"
+useStopTP = input.bool(true, "Use ATR-based Stop/Target", group=grpRisk)
+atrLen = input.int(14, "ATR Length", group=grpRisk)
+atrStopMult = input.float(1.5, "Stop = ATR x", step=0.1, group=grpRisk)
+atrTPMult = input.float(3.0, "Target = ATR x", step=0.1, group=grpRisk)
+
+grpWebhook = "Webhook / Bot Automation"
+symbolTag = input.string("EURUSD", "Symbol tag sent in alert JSON", group=grpWebhook)
+
+// ============================================================
+// CALCULATIONS
+// ============================================================
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+emaMajor = ta.ema(close, emaFilterLen)
+
+rsi = ta.rsi(close, rsiLen)
+[macdLine, signalLine, hist] = ta.macd(close, macdFast, macdSlow, macdSig)
+atrVal = ta.atr(atrLen)
+
+swingHigh = ta.pivothigh(high, swingLen, swingLen)
+swingLow = ta.pivotlow(low, swingLen, swingLen)
+
+var float lastSwingHigh = na
+var float lastSwingLow = na
+if not na(swingHigh)
+    lastSwingHigh := swingHigh
+if not na(swingLow)
+    lastSwingLow := swingLow
+
+// ============================================================
+// CONFLUENCE CONDITIONS
+// ============================================================
+trendUp   = emaFast > emaSlow
+trendDown = emaFast < emaSlow
+
+momUp   = rsi > rsiBull and hist > 0
+momDown = rsi < rsiBear and hist < 0
+
+biasUp   = not useTrendFilter or close > emaMajor
+biasDown = not useTrendFilter or close < emaMajor
+
+breakoutUp   = not useBreakout or (not na(lastSwingHigh) and close > lastSwingHigh)
+breakoutDown = not useBreakout or (not na(lastSwingLow) and close < lastSwingLow)
+
+rawBuy  = trendUp and momUp and biasUp and breakoutUp
+rawSell = trendDown and momDown and biasDown and breakoutDown
+
+var int lastSignalBar = na
+canSignal = na(lastSignalBar) or (bar_index - lastSignalBar) >= cooldownBars
+
+buySignal  = rawBuy and canSignal
+sellSignal = rawSell and canSignal
+
+if buySignal or sellSignal
+    lastSignalBar := bar_index
+
+// ============================================================
+// STOP / TARGET LEVELS
+// ============================================================
+longStop  = close - atrVal * atrStopMult
+longTP    = close + atrVal * atrTPMult
+shortStop = close + atrVal * atrStopMult
+shortTP   = close - atrVal * atrTPMult
+
+// ============================================================
+// STRATEGY ENTRIES/EXITS  (alert_message = JSON payload sent to your webhook bridge)
+// ============================================================
+if buySignal
+    strategy.entry("Long", strategy.long,
+         alert_message='{"action":"open","side":"buy","symbol":"' + symbolTag + '","qty_pct":100,"sl":' + str.tostring(longStop) + ',"tp":' + str.tostring(longTP) + '}')
+    if useStopTP
+        strategy.exit("Long Exit", "Long", stop=longStop, limit=longTP,
+             alert_message='{"action":"close","side":"buy","symbol":"' + symbolTag + '"}')
+
+if sellSignal
+    strategy.entry("Short", strategy.short,
+         alert_message='{"action":"open","side":"sell","symbol":"' + symbolTag + '","qty_pct":100,"sl":' + str.tostring(shortStop) + ',"tp":' + str.tostring(shortTP) + '}')
+    if useStopTP
+        strategy.exit("Short Exit", "Short", stop=shortStop, limit=shortTP,
+             alert_message='{"action":"close","side":"sell","symbol":"' + symbolTag + '"}')
+
+// Opposite-signal flip closes the current position too
+if sellSignal and strategy.position_size > 0
+    strategy.close("Long", alert_message='{"action":"close","side":"buy","symbol":"' + symbolTag + '"}')
+if buySignal and strategy.position_size < 0
+    strategy.close("Short", alert_message='{"action":"close","side":"sell","symbol":"' + symbolTag + '"}')
+
+// ============================================================
+// PLOTS
+// ============================================================
+plot(emaFast, "EMA Fast", color=color.new(color.aqua, 0))
+plot(emaSlow, "EMA Slow", color=color.new(color.orange, 0))
+plot(emaMajor, "EMA Major", color=color.new(color.gray, 40), linewidth=2)
+
+plotshape(buySignal, title="BUY", style=shape.labelup, location=location.belowbar,
+     color=color.new(color.green, 0), text="BUY", textcolor=color.white, size=size.small)
+plotshape(sellSignal, title="SELL", style=shape.labeldown, location=location.abovebar,
+     color=color.new(color.red, 0), text="SELL", textcolor=color.white, size=size.small)
+
+bgcolor(trendUp and biasUp ? color.new(color.green, 92) : trendDown and biasDown ? color.new(color.red, 92) : na)
+
+// ============================================================
+// ALERT CONDITIONS (for "Any alert() function call" trigger on your strategy alert)
+// ============================================================
+alertcondition(buySignal, title="Buy Signal", message="Forex Confluence: BUY {{ticker}} at {{close}}")
+alertcondition(sellSignal, title="Sell Signal", message="Forex Confluence: SELL {{ticker}} at {{close}}")

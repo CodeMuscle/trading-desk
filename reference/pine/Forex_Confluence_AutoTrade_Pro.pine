@@ -1,0 +1,187 @@
+//@version=5
+strategy("Forex Confluence Auto-Trade Pro (Profit Booking + Trailing)", overlay=true,
+     max_labels_count=500, default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     initial_capital=10000, currency=currency.USD, pyramiding=0)
+
+// ============================================================
+// INPUTS
+// ============================================================
+grpTrend = "Trend (EMA)"
+emaFastLen = input.int(20, "Fast EMA", group=grpTrend)
+emaSlowLen = input.int(50, "Slow EMA", group=grpTrend)
+emaFilterLen = input.int(200, "Major Trend EMA (bias filter)", group=grpTrend)
+
+grpMom = "Momentum (RSI + MACD)"
+rsiLen = input.int(14, "RSI Length", group=grpMom)
+rsiBull = input.int(50, "RSI Bull Threshold", group=grpMom)
+rsiBear = input.int(50, "RSI Bear Threshold", group=grpMom)
+macdFast = input.int(12, "MACD Fast", group=grpMom)
+macdSlow = input.int(26, "MACD Slow", group=grpMom)
+macdSig = input.int(9, "MACD Signal", group=grpMom)
+
+grpPA = "Price Action"
+swingLen = input.int(10, "Swing High/Low Lookback", minval=2, group=grpPA)
+useBreakout = input.bool(true, "Require breakout of recent swing", group=grpPA)
+useCandle = input.bool(true, "Require candlestick confirmation (engulfing/pin bar)", group=grpPA)
+
+grpFilt = "Signal Filters"
+useTrendFilter = input.bool(true, "Require price above/below 200 EMA (bias filter)", group=grpFilt)
+cooldownBars = input.int(5, "Min bars between signals", minval=0, group=grpFilt)
+
+grpRisk = "Risk Management / Profit Booking"
+atrLen = input.int(14, "ATR Length", group=grpRisk)
+atrStopMult = input.float(1.5, "Initial Stop = ATR x", step=0.1, group=grpRisk)
+tp1RMultiple = input.float(1.0, "Book partial profit at (R multiple)", step=0.1, group=grpRisk)
+tp1Percent = input.float(50, "Percent of position to book at TP1", minval=1, maxval=99, group=grpRisk)
+moveToBreakeven = input.bool(true, "Move stop to breakeven after TP1", group=grpRisk)
+trailATRMult = input.float(2.0, "Trail remaining position by ATR x", step=0.1, group=grpRisk)
+
+grpWebhook = "Webhook / Bot Automation"
+symbolTag = input.string("EURUSD", "Symbol tag sent in alert JSON", group=grpWebhook)
+
+// ============================================================
+// INDICATOR CALCULATIONS
+// ============================================================
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+emaMajor = ta.ema(close, emaFilterLen)
+rsi = ta.rsi(close, rsiLen)
+[macdLine, signalLine, hist] = ta.macd(close, macdFast, macdSlow, macdSig)
+atrVal = ta.atr(atrLen)
+
+swingHigh = ta.pivothigh(high, swingLen, swingLen)
+swingLow = ta.pivotlow(low, swingLen, swingLen)
+var float lastSwingHigh = na
+var float lastSwingLow = na
+if not na(swingHigh)
+    lastSwingHigh := swingHigh
+if not na(swingLow)
+    lastSwingLow := swingLow
+
+// ---- Candlestick patterns ----
+body = math.abs(close - open)
+range_ = high - low
+upperWick = high - math.max(close, open)
+lowerWick = math.min(close, open) - low
+
+bullEngulf = close > open and close[1] < open[1] and close > open[1] and open < close[1]
+bearEngulf = close < open and close[1] > open[1] and close < open[1] and open > close[1]
+hammer     = range_ > 0 and lowerWick > body * 2 and upperWick < body * 0.6 and close > open
+shootStar  = range_ > 0 and upperWick > body * 2 and lowerWick < body * 0.6 and close < open
+
+bullCandle = bullEngulf or hammer
+bearCandle = bearEngulf or shootStar
+
+// ============================================================
+// CONFLUENCE CONDITIONS
+// ============================================================
+trendUp   = emaFast > emaSlow
+trendDown = emaFast < emaSlow
+momUp     = rsi > rsiBull and hist > 0
+momDown   = rsi < rsiBear and hist < 0
+biasUp    = not useTrendFilter or close > emaMajor
+biasDown  = not useTrendFilter or close < emaMajor
+breakoutUp   = not useBreakout or (not na(lastSwingHigh) and close > lastSwingHigh)
+breakoutDown = not useBreakout or (not na(lastSwingLow) and close < lastSwingLow)
+candleUp   = not useCandle or bullCandle
+candleDown = not useCandle or bearCandle
+
+rawBuy  = trendUp and momUp and biasUp and breakoutUp and candleUp
+rawSell = trendDown and momDown and biasDown and breakoutDown and candleDown
+
+var int lastSignalBar = na
+canSignal = na(lastSignalBar) or (bar_index - lastSignalBar) >= cooldownBars
+buySignal  = rawBuy and canSignal and strategy.position_size == 0
+sellSignal = rawSell and canSignal and strategy.position_size == 0
+if buySignal or sellSignal
+    lastSignalBar := bar_index
+
+// ============================================================
+// TRADE MANAGEMENT: entry, partial TP, breakeven, ATR trail
+// ============================================================
+var float entryPrice = na
+var float initStop = na
+var float tp1Level = na
+var bool  tp1Done = false
+
+if buySignal
+    entryPrice := close
+    initStop := close - atrVal * atrStopMult
+    tp1Level := close + (close - initStop) * tp1RMultiple
+    tp1Done := false
+    strategy.entry("Long", strategy.long,
+         alert_message='{"action":"open","side":"buy","symbol":"' + symbolTag + '","qty_pct":100,"sl":' + str.tostring(initStop) + ',"tp1":' + str.tostring(tp1Level) + '}')
+
+if sellSignal
+    entryPrice := close
+    initStop := close + atrVal * atrStopMult
+    tp1Level := close - (initStop - close) * tp1RMultiple
+    tp1Done := false
+    strategy.entry("Short", strategy.short,
+         alert_message='{"action":"open","side":"sell","symbol":"' + symbolTag + '","qty_pct":100,"sl":' + str.tostring(initStop) + ',"tp1":' + str.tostring(tp1Level) + '}')
+
+inLong  = strategy.position_size > 0
+inShort = strategy.position_size < 0
+
+// detect TP1 fill (position size shrinks but stays same direction)
+if inLong and not tp1Done and high >= tp1Level
+    tp1Done := true
+if inShort and not tp1Done and low <= tp1Level
+    tp1Done := true
+
+// stop used for the remaining runner: breakeven after TP1, else initial stop
+runnerStopLong  = tp1Done and moveToBreakeven ? entryPrice : initStop
+runnerStopShort = tp1Done and moveToBreakeven ? entryPrice : initStop
+
+// ATR trailing offset applied once TP1 is booked
+trailOffsetPts = trailATRMult * atrVal / syminfo.mintick
+
+if inLong
+    strategy.exit("TP1 Long", "Long", qty_percent=tp1Percent, limit=tp1Level, stop=initStop,
+         alert_message='{"action":"partial_close","side":"buy","symbol":"' + symbolTag + '","pct":' + str.tostring(tp1Percent) + '}')
+    strategy.exit("Runner Long", "Long", stop=runnerStopLong,
+         trail_points=tp1Done ? 1 : na, trail_offset=tp1Done ? trailOffsetPts : na,
+         alert_message='{"action":"close","side":"buy","symbol":"' + symbolTag + '"}')
+
+if inShort
+    strategy.exit("TP1 Short", "Short", qty_percent=tp1Percent, limit=tp1Level, stop=initStop,
+         alert_message='{"action":"partial_close","side":"sell","symbol":"' + symbolTag + '","pct":' + str.tostring(tp1Percent) + '}')
+    strategy.exit("Runner Short", "Short", stop=runnerStopShort,
+         trail_points=tp1Done ? 1 : na, trail_offset=tp1Done ? trailOffsetPts : na,
+         alert_message='{"action":"close","side":"sell","symbol":"' + symbolTag + '"}')
+
+// ============================================================
+// PLOTS
+// ============================================================
+plot(emaFast, "EMA Fast", color=color.new(color.aqua, 0))
+plot(emaSlow, "EMA Slow", color=color.new(color.orange, 0))
+plot(emaMajor, "EMA Major", color=color.new(color.gray, 40), linewidth=2)
+
+plotshape(buySignal, title="BUY", style=shape.labelup, location=location.belowbar,
+     color=color.new(color.green, 0), text="BUY", textcolor=color.white, size=size.small)
+plotshape(sellSignal, title="SELL", style=shape.labeldown, location=location.abovebar,
+     color=color.new(color.red, 0), text="SELL", textcolor=color.white, size=size.small)
+plotshape(inLong and tp1Done and tp1Done[1] == false, title="TP1 Booked", style=shape.circle,
+     location=location.abovebar, color=color.new(color.teal, 0), size=size.tiny)
+plotshape(inShort and tp1Done and tp1Done[1] == false, title="TP1 Booked", style=shape.circle,
+     location=location.belowbar, color=color.new(color.teal, 0), size=size.tiny)
+
+bgcolor(trendUp and biasUp ? color.new(color.green, 92) : trendDown and biasDown ? color.new(color.red, 92) : na)
+
+// ============================================================
+// STATUS TABLE
+// ============================================================
+var table infoTable = table.new(position.top_right, 2, 6, border_width=1)
+if barstate.islast
+    table.cell(infoTable, 0, 0, "Trend", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 0, trendUp ? "UP" : trendDown ? "DOWN" : "FLAT", bgcolor=trendUp ? color.green : trendDown ? color.red : color.gray, text_color=color.white)
+    table.cell(infoTable, 0, 1, "RSI", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 1, str.tostring(math.round(rsi, 1)), bgcolor=color.new(color.blue, 60), text_color=color.white)
+    table.cell(infoTable, 0, 2, "Candle Confirm", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 2, bullCandle ? "BULLISH" : bearCandle ? "BEARISH" : "None", bgcolor=color.new(color.blue, 60), text_color=color.white)
+    table.cell(infoTable, 0, 3, "Position", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 3, inLong ? "LONG" : inShort ? "SHORT" : "Flat", bgcolor=color.new(color.gray, 60), text_color=color.white)
+    table.cell(infoTable, 0, 4, "TP1 Booked", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 4, tp1Done ? "YES" : "No", bgcolor=color.new(color.teal, 60), text_color=color.white)
+    table.cell(infoTable, 0, 5, "Last Signal", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 5, buySignal ? "BUY" : sellSignal ? "SELL" : "None", bgcolor=color.new(color.gray, 60), text_color=color.white)

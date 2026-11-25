@@ -1,0 +1,180 @@
+/* Hallmark | component-scope: trading desk application chrome
+ * genre: atmospheric (dense data UI) | theme: custom "Slate & Ember"
+ * axes: paper-band dark (L 6%) / display-style grotesk-sans / accent-hue warm (55deg)
+ * studied: craft principles only, no third-party tokens copied
+ * pre-emit critique: P5 H5 E4 S5 R5 V4
+ * contrast (computed, not estimated): ink-1 15.49:1 | ink-2 8.30:1 | ink-3 4.50:1
+ * accent 7.04:1 | pos 8.19:1 | neg 5.29:1 | annotate 6.52:1
+ * buy btn white-on-bg 5.09:1 | sell btn 5.43:1 | light ink-1 17.37:1
+ * --ink-dim is 2.51:1 - DECORATION ONLY, never text. See its comment below.
+ */
+
+:root {
+  /* ---- ground and surfaces: blue-black, never pure #000 ----
+     Pure black kills depth layering and is harsh over long sessions.
+     Four surfaces give panel-over-panel depth without a single shadow. */
+  --ground:            #0A0E16;
+  --surface-1:         #121722;
+  --surface-2:         #1A2130;
+  --surface-3:         #232C3E;
+  --surface-hover:     #1F2736;
+
+  /* ---- ink: warm bone, never pure white. Reduces glare at 13px. ---- */
+  --ink-1:             #E8E6E1;
+  --ink-2:             rgba(232, 230, 225, 0.72);
+  --ink-3:             rgba(232, 230, 225, 0.50);
+  --ink-dim:           rgba(232, 230, 225, 0.32);  /* 2.51:1 - rules, ticks,
+     disabled glyphs and other DECORATION only. Never body text or a label. */
+
+  /* ---- border ladder: four steps, alpha not colour.
+     Depth in dense UI comes from hairlines, not drop shadows. ---- */
+  --line-1:            rgba(232, 230, 225, 0.07);
+  --line-2:            rgba(232, 230, 225, 0.12);
+  --line-3:            rgba(232, 230, 225, 0.18);
+  --line-active:       rgba(232, 230, 225, 0.26);
+
+  /* ---- UI accent: warm ember. Deliberately NOT the positive colour,
+     so a selected control can never be mistaken for a rising candle. ---- */
+  --accent:            #D98A3D;
+  --accent-hover:      #C2742C;
+  --accent-soft:       rgba(217, 138, 61, 0.14);
+
+  /* ---- data semantics: reserved for price and metric values ONLY.
+     Never use these on a button, tab, or chrome element. ---- */
+  --pos:               #2FBF84;
+  --pos-soft:          rgba(47, 191, 132, 0.13);
+  --neg:               #E8524F;
+  --neg-soft:          rgba(232, 82, 79, 0.13);
+  --caution:           #E0A830;
+  --caution-soft:      rgba(224, 168, 48, 0.13);
+  --info:              #5B9BD5;
+  --info-soft:         rgba(91, 155, 213, 0.13);
+  --annotate:          #9B8BD9;   /* drawings, user annotations, zones */
+  --annotate-soft:     rgba(155, 139, 217, 0.13);
+
+  /* ---- order-entry buttons: desaturated from the data semantics so the
+     chart's greens and reds stay the loudest thing on screen. ---- */
+  --buy-bg:            #1B7D5A;   /* white label 5.09:1 - AA pass */
+  --buy-bg-hover:      #187051;
+  --sell-bg:           #B8413F;
+  --sell-bg-hover:     #A53634;
+  --btn-fg:            #FFFFFF;
+
+  /* ---- staleness and unavailability: first-class states, not warnings.
+     The degradation contract needs a visual vocabulary. ---- */
+  --stale:             rgba(232, 230, 225, 0.38);
+  --stale-hatch:       repeating-linear-gradient(45deg,
+                         transparent 0 3px, rgba(232,230,225,0.05) 3px 6px);
+  --unavailable-fg:    rgba(232, 230, 225, 0.30);
+
+  /* ---- type: 2+1 pairing. Geist carries character in titles;
+     Inter is the correct engineering choice at 10-13px, not slop;
+     JetBrains Mono is tabular so price columns align. ---- */
+  --font-display:      "Geist", "Inter", system-ui, sans-serif;
+  --font-ui:           "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono:         "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --fs-micro:          10px;   /* axis labels, legend keys */
+  --fs-caption:        11px;   /* column headers, metric labels */
+  --fs-dense:          12px;   /* table rows, tool rail */
+  --fs-body:           13px;   /* base */
+  --fs-body-lg:        14px;
+  --fs-title:          16px;
+  --fs-title-lg:       18px;
+  --fs-display:        22px;   /* the live price, account name */
+
+  --lh-tight:          1.2;
+  --lh-ui:             1.35;
+  --lh-prose:          1.55;
+
+  /* ---- radii: small. Rounded corners read consumer; terminals read precise. ---- */
+  --radius-sm:         2px;    /* inputs, chips, cells */
+  --radius:            6px;    /* panels, buttons, cards */
+  --radius-lg:         8px;    /* modals, floating panels */
+  --radius-pill:       999px;
+
+  /* ---- 4pt spacing scale ---- */
+  --space-05:          2px;
+  --space-1:           4px;
+  --space-2:           8px;
+  --space-3:           12px;
+  --space-4:           16px;
+  --space-5:           20px;
+  --space-6:           24px;
+  --space-8:           32px;
+  --space-10:          40px;
+  --space-12:          48px;
+
+  /* ---- control heights: four rungs, so density is a setting not a rewrite ---- */
+  --control-xs:        24px;
+  --control-sm:        28px;
+  --control-md:        32px;
+  --control-lg:        40px;
+  --rail-w:            52px;   /* left tool rail */
+  --topbar-h:          42px;
+
+  /* ---- motion: fast. Anything over 200ms feels laggy in a terminal. ---- */
+  --dur-fast:          120ms;
+  --dur:               150ms;
+  --dur-slow:          250ms;
+  --ease-out:          cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in:           cubic-bezier(0.64, 0, 0.78, 0);
+  --ease-in-out:       cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* ---- glass chrome: floating panels over a live chart must not
+     fully occlude the candles behind them. ---- */
+  --chrome-bg:         rgba(10, 14, 22, 0.85);
+  --chrome-blur:       blur(20px);
+
+  /* ---- focus: 2px, instant, never animated ---- */
+  --focus-ring:        var(--accent);
+  --focus-ring-w:      2px;
+
+  --icon-stroke:       1.75;   /* finer than the default 2; reads precise at 16px */
+}
+
+/* ---- light theme: warm paper, cool ink. For daylight and screenshots. ---- */
+:root[data-theme="light"] {
+  --ground:            #FBF9F4;
+  --surface-1:         #FFFFFF;
+  --surface-2:         #F4F1E9;
+  --surface-3:         #EBE7DC;
+  --surface-hover:     rgba(16, 21, 31, 0.04);
+
+  --ink-1:             #10151F;
+  --ink-2:             rgba(16, 21, 31, 0.78);
+  --ink-3:             rgba(16, 21, 31, 0.58);
+  --ink-dim:           rgba(16, 21, 31, 0.36);
+
+  --line-1:            rgba(16, 21, 31, 0.08);
+  --line-2:            rgba(16, 21, 31, 0.14);
+  --line-3:            rgba(16, 21, 31, 0.22);
+  --line-active:       rgba(16, 21, 31, 0.32);
+
+  --accent:            #9E5C14;   /* 5.00:1 on paper - AA pass */
+  --accent-hover:      #8F5210;
+  --accent-soft:       rgba(176, 106, 31, 0.12);
+
+  --pos:               #157A53;   /* 5.06:1 on paper - AA pass */
+  --neg:               #C4382F;
+  --caution:           #A8761A;
+  --info:              #2C6FA8;
+  --annotate:          #6B5BB5;
+
+  --stale:             rgba(16, 21, 31, 0.42);
+  --stale-hatch:       repeating-linear-gradient(45deg,
+                         transparent 0 3px, rgba(16,21,31,0.05) 3px 6px);
+  --unavailable-fg:    rgba(16, 21, 31, 0.34);
+
+  --chrome-bg:         rgba(251, 249, 244, 0.85);
+}
+
+/* numbers align or they lie */
+.num, td.num, .price, .metric-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 1ms !important; animation-duration: 1ms !important; }
+}
