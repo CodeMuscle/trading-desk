@@ -2,7 +2,8 @@
 
 **Date:** 25 November 2026 (revised same day)
 **Status:** approved design, pre-implementation
-**Spec:** 1 of 4. Companion: `2026-11-25-desk-platform-design.md`
+**Spec:** 1 of 5. Companions: `2026-11-25-desk-platform-design.md` (Spec 2),
+`2026-11-25-research-journal-review-design.md` (Spec 3).
 
 ## Purpose
 
@@ -271,6 +272,46 @@ the chart overlay, the backtest, and the paper engine. Seeded from the user's tw
 scripts. Each template carries a validation record and a state: `draft` (no order path),
 `validated`, or `failed` (kept visible with its PBO and deflated Sharpe shown).
 
+## Risk limits (supplied 25 Nov 2026)
+
+These are the numbers B1 was blocked on. All are deterministic code in `risk/`, never
+agent-adjustable.
+
+| Limit | Value | Mechanism |
+|---|---|---|
+| Risk per trade | 1% of account equity | Fixed fractional, ATR-based stop distance (1.5x ATR per the user's Pine scripts) |
+| **Portfolio heat cap** | **6%** total open risk | Refuses a new entry that would push summed open risk above 6%. Six concurrent positions at 1% |
+| **Correlated-exposure cap** | **2.5%** per correlated cluster | Clusters computed from the L0 average-pairwise-correlation matrix, not assumed by asset class. Four dollar-correlated FX positions are one bet, not four |
+| **Daily loss limit** | **3%** realised | Kill switch. Halts new entries for the session. Open positions keep their stops |
+| **Monthly loss limit** | **10%** soft, **15%** hard | At -10% risk per trade halves; at -15% new entries stop until the month rolls |
+
+### Why heat is 6% and not 3%
+
+Heat above the daily limit means a simultaneous stop-out can breach the daily limit in
+one move. Setting heat equal to the daily limit (3%) makes that structurally impossible
+but allows only three concurrent positions, which is tight across four markets.
+
+6% accepts the theoretical breach and defends against the realistic version of it with
+the correlated-exposure cap, since simultaneous stop-outs are overwhelmingly a
+correlation event rather than a coincidence. The daily limit remains the binding
+constraint in normal operation; heat is the structural ceiling.
+
+The arithmetic is self-consistent: 3% daily across roughly four bad days reaches the 15%
+monthly hard stop, so the two limits bind at a similar horizon rather than one making
+the other decorative.
+
+### Tests these limits require
+
+- Heat cap: the entry that would take summed open risk to 6.01% is refused; 6.00% is
+  accepted. Boundary, not approximate.
+- Correlated cluster: four positions whose pairwise correlation exceeds the cluster
+  threshold are summed as one cluster, and the fifth is refused.
+- Daily loss limit: fires at exactly -3.00% realised, halts new entries, and does **not**
+  liquidate open positions.
+- Monthly: at -10.00% the computed per-trade risk is exactly 0.5%; at -15.00% entries
+  return zero size.
+- Fail-closed: if any limit cannot be computed, size is zero.
+
 ## The degradation contract
 
 Four markets have genuinely different data ceilings. The failure mode that kills trading
@@ -353,8 +394,6 @@ reaches them. Re-raise at that point rather than on a timer.
   to reverse, so it gets scrutiny before Spec 2 begins.
 - Whether the adapter interface genuinely accommodates NSE, verified against Angel One
   and Fyers docs before B2 locks the interface. Expensive to reverse.
-- Portfolio heat cap and daily loss limit are still unknown. The Pine scripts supply
-  per-trade risk but say nothing about portfolio-level limits, and B1 needs them.
 - Whether the ~25 reference-free definitions not covered by the Pine scripts (zones,
   value area, anchored VWAP, volume profile) match the user's intent. The reading list
   he supplied is the source; where a definition still varies, ask rather than pick.

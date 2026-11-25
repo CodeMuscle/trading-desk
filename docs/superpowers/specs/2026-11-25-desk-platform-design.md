@@ -2,7 +2,8 @@
 
 **Date:** 25 November 2026
 **Status:** approved design, pre-implementation
-**Spec:** 2 of 4 (see `2026-11-25-metrics-spine-design.md` for Spec 1)
+**Spec:** 2 of 5 (see `2026-11-25-metrics-spine-design.md` for Spec 1,
+`2026-11-25-research-journal-review-design.md` for Spec 3)
 
 ## Purpose
 
@@ -310,6 +311,5 @@ cannot lose money.
   stacking panels in a 1440px-wide window starves the chart, but this is a preference to
   revisit once M1 is on screen.
 - Whether Geist earns its place over using Inter at every size. Decide by looking at M1.
-- The portfolio heat cap and daily loss limit are still unknown. The user's Pine scripts
-  supply per-trade risk (1.5x ATR stop, 1R partial at 50%, breakeven move, 2x ATR trail)
-  but say nothing about portfolio-level limits, which M3 needs.
+- Risk limits are now supplied and recorded in Spec 1: 1% per trade, 6% portfolio heat,
+  2.5% per correlated cluster, 3% daily, 10/15% monthly. No longer blocking M3.
