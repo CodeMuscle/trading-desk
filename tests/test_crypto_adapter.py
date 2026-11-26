@@ -73,3 +73,93 @@ def test_fetch_frame_wraps_the_data_with_capabilities_and_an_as_of():
 def test_an_empty_response_raises_rather_than_returning_an_empty_frame():
     with pytest.raises(ValueError, match="no bars"):
         CryptoAdapter(client=FakeCcxt(rows=[])).fetch_ohlcv("BTC/USDT", "1h", 10)
+
+
+# --------------------------------------------------------------- pagination
+
+class CappedCcxt:
+    """An exchange that silently caps every call at 1000 bars, as real ones do.
+
+    The silence is the point. Asking for 5000 does not error; you get 1000 and
+    a backtest that quietly covers a fraction of the intended window.
+    """
+
+    id = "capped"
+    STEP_MS = 3_600_000  # 1h
+
+    def __init__(self, history_bars: int = 5000, cap: int = 1000):
+        self.cap = cap
+        # Anchored to the real clock, because the adapter computes its start
+        # window from datetime.now(). A hardcoded "now" here drifts a bar per
+        # hour against it and silently truncates the window under test.
+        from datetime import datetime, timezone
+
+        now = int(datetime.now(timezone.utc).timestamp() * 1000)
+        self.start = now - history_bars * self.STEP_MS
+        self.history = [
+            [self.start + i * self.STEP_MS, 100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i, 10.0]
+            for i in range(history_bars)
+        ]
+        self.calls: list[tuple] = []
+
+    def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None):
+        self.calls.append((symbol, timeframe, since, limit))
+        rows = self.history
+        if since is not None:
+            rows = [r for r in rows if r[0] >= since]
+        return rows[: min(limit or self.cap, self.cap)]
+
+
+def test_a_single_page_request_is_still_one_call():
+    client = CappedCcxt()
+    CryptoAdapter(client=client).fetch_ohlcv("BTC/USDT", "1h", 500)
+    assert len(client.calls) == 1
+
+
+def test_more_than_the_page_size_is_paged_rather_than_silently_truncated():
+    client = CappedCcxt(history_bars=5000)
+    frame = CryptoAdapter(client=client).fetch_ohlcv("BTC/USDT", "1h", 3000)
+    assert len(client.calls) > 1, "a 3000-bar request must page"
+    assert len(frame) == 3000, f"got {len(frame)} bars, not the 3000 requested"
+
+
+def test_paging_produces_a_clean_sorted_index_with_no_duplicates():
+    client = CappedCcxt(history_bars=5000)
+    frame = CryptoAdapter(client=client).fetch_ohlcv("BTC/USDT", "1h", 2500)
+    assert frame.index.is_monotonic_increasing
+    assert not frame.index.has_duplicates
+    assert str(frame.index.tz) == "UTC"
+
+
+def test_paging_stops_when_the_history_runs_out_rather_than_looping():
+    client = CappedCcxt(history_bars=1500)
+    frame = CryptoAdapter(client=client).fetch_ohlcv("BTC/USDT", "1h", 10_000)
+    assert len(frame) <= 1500
+    assert len(client.calls) < 10, "a short page must end the walk"
+
+
+def test_an_exchange_that_rewinds_does_not_loop_forever():
+    class Rewinds(CappedCcxt):
+        def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None):
+            self.calls.append((symbol, timeframe, since, limit))
+            # Always returns the same first page, never advancing.
+            return self.history[: self.cap]
+
+    client = Rewinds(history_bars=5000)
+    CryptoAdapter(client=client).fetch_ohlcv("BTC/USDT", "1h", 4000)
+    assert len(client.calls) <= 61, "the runaway guard must bound the walk"
+
+
+def test_an_unparseable_timeframe_raises_before_any_network_call():
+    from desk.adapters.crypto import timeframe_ms
+
+    with pytest.raises(ValueError, match="timeframe"):
+        timeframe_ms("fortnightly")
+
+
+def test_timeframe_ms_matches_the_frame_parser():
+    from desk.adapters.crypto import timeframe_ms
+
+    assert timeframe_ms("1m") == 60_000
+    assert timeframe_ms("4h") == 14_400_000
+    assert timeframe_ms("1d") == 86_400_000
