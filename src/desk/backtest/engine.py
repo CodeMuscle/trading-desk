@@ -12,6 +12,7 @@ pessimistic reading is the only one that cannot flatter the result.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -201,6 +202,21 @@ def run_backtest(
                 refusals.append((timestamp, decision.reasons[0] if decision.reasons else "refused"))
             else:
                 bar_atr = float(atr_values.iloc[i])
+                if not math.isfinite(bar_atr):
+                    # ATR is not seeded yet, so slippage cannot be priced. Taking
+                    # the trade anyway multiplies a NaN into the fill, and from
+                    # there into equity, which never recovers: every later intent
+                    # is refused for a non-numeric account and the run reports one
+                    # trade and silence. Refuse this bar instead and say why.
+                    refusals.append(
+                        (
+                            timestamp,
+                            "ATR not seeded at this bar, so slippage cannot be "
+                            "priced; a trade that cannot be costed is not taken",
+                        )
+                    )
+                    equity_points.append(equity)
+                    continue
                 slip = costs.slippage(bar_atr)
                 # Entry fills worse than the signal price, in the direction
                 # that hurts.
@@ -240,7 +256,14 @@ def _close(
     i: int,
 ) -> tuple[float, Trade]:
     units = open_trade["units"]
-    slip = costs.slippage(float(atr_values.iloc[i]))
+    exit_atr = float(atr_values.iloc[i])
+    if not math.isfinite(exit_atr):
+        # Unreachable by construction: ATR is seeded once and stays finite, and
+        # entry already refused any bar where it was not. Raising rather than
+        # defaulting to zero keeps a future change to either of those facts from
+        # silently reintroducing free exits.
+        raise AssertionError(f"ATR is {exit_atr} at exit bar {i}; cannot cost the exit")
+    slip = costs.slippage(exit_atr)
     # Exit also fills against you.
     fill = exit_price - slip if open_trade["side"] is Side.LONG else exit_price + slip
 

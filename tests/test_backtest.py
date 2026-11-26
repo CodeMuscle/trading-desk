@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 import pytest
 
@@ -9,7 +11,7 @@ from desk.backtest.costs import ZERO_COSTS, CostModel
 from desk.backtest.engine import run_backtest
 from desk.risk.limits import RiskLimits
 from desk.strategy.base import Intent, Side
-from tests.fixtures import frame_from_rows
+from tests.fixtures import flat_closes, frame_from_rows
 
 
 def flat_bars(n: int, price: float = 100.0, span: float = 1.0):
@@ -166,3 +168,43 @@ def test_the_daily_limit_stops_further_entries_within_the_same_session():
 def test_a_negative_starting_equity_is_an_error():
     frame = frame_from_rows(flat_bars(40))
     assert run_backtest(frame, [], costs=ZERO_COSTS, starting_equity=-1.0).is_error
+
+
+def test_an_intent_before_atr_is_seeded_is_refused_not_silently_poisoned():
+    """Regression: a NaN ATR used to end the run without saying so.
+
+    ATR needs its full length of real bars before it produces a number. An
+    intent landing earlier multiplied that NaN into the entry fill, then into
+    equity, and equity never recovers from NaN: the risk engine refused every
+    later intent for a non-numeric account, so a 20-intent run reported one
+    trade and nineteen refusals whose stated reason pointed at the account
+    rather than at the unseeded indicator.
+
+    This was reachable only through short frames, which is why the confluence
+    strategy never hit it: its 200-EMA gate cannot fire inside the first 14
+    bars. Walk-forward reaches it on every fold.
+    """
+    closes = [100.0 + i for i in range(40)]
+    frame = flat_closes(closes)
+    first = frame.data.index[0]
+    intents = [
+        Intent(index=first, side=Side.LONG, entry=100.0, stop=99.0, target=102.0),
+        Intent(
+            index=frame.data.index[30], side=Side.LONG,
+            entry=130.0, stop=129.0, target=132.0,
+        ),
+    ]
+
+    result = run_backtest(frame, intents, costs=CostModel(), starting_equity=100_000.0)
+    assert result.is_ok
+    value = result.value
+
+    assert len(value.refusals) == 1
+    assert "ATR not seeded" in value.refusals[0][1]
+
+    # The second intent, well past the warm-up, still trades. The bug's real
+    # damage was here: one unpriceable bar used to disable the rest of the run.
+    assert len(value.trades) == 1
+    assert value.trades[0].entry_index == frame.data.index[30]
+    assert math.isfinite(value.equity.iloc[-1])
+    assert not value.equity.isna().any()
