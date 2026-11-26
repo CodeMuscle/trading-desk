@@ -63,6 +63,13 @@ def test_metric_output_on_shared_bars_is_unchanged_by_truncation(name, cut):
         capabilities=full.capabilities,
     )
 
+    if spec.returns in {"scalars", "profile"}:
+        pytest.skip(
+            f"{name} describes the whole frame, not each bar. Truncating gives a "
+            "different frame and therefore a legitimately different answer, so "
+            "the no-lookahead property has nothing to say about it."
+        )
+
     full_result = spec.fn(full, **spec.defaults)
     short_result = spec.fn(short, **spec.defaults)
 
@@ -92,5 +99,5 @@ def test_every_registered_metric_is_covered_by_this_test():
         "ema", "trend_state", "session_vwap", "bullish_engulfing",
         "bearish_engulfing", "hammer", "shooting_star", "swing_pivots",
         "confirmed_swing_levels", "break_of_structure", "imbalance",
-        "imbalance_bands",
+        "imbalance_bands", "volume_profile", "value_area",
     }

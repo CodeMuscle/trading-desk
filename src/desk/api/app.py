@@ -141,6 +141,16 @@ def create_app(store: FrameStore, adapter: CryptoAdapter) -> FastAPI:
             return {"name": name, "state": "error", "reason": str(result.error),
                     "stale": False, "points": []}
 
+        if spec.returns == "scalars":
+            return {"name": name, "state": "ok", "stale": result.stale,
+                    "scalars": result.value, "points": []}
+        if spec.returns == "profile":
+            return {"name": name, "state": "ok", "stale": result.stale,
+                    "profile": [
+                        {"price": float(p), "volume": float(v)}
+                        for p, v in zip(result.value["price"], result.value["volume"])
+                    ],
+                    "poc": result.meta.get("poc"), "points": []}
         if spec.returns == "dict_of_series":
             return {"name": name, "state": "ok", "stale": result.stale,
                     "series": {k: _points(v) for k, v in result.value.items()},

@@ -13,6 +13,7 @@ from typing import Any
 
 from desk.capabilities import Capability
 from desk.metrics.l1_trend import ema, session_vwap, trend_state
+from desk.metrics.l2_profile import value_area, volume_profile
 from desk.metrics.l4_structure import (
     break_of_structure,
     confirmed_swing_levels,
@@ -67,5 +68,11 @@ REGISTRY: dict[str, MetricSpec] = {
     "imbalance": MetricSpec(imbalance, OHLCV, "series", {}),
     "imbalance_bands": MetricSpec(
         imbalance_bands, OHLCV, "dict_of_series", {}, sparse=True
+    ),
+    # "scalars" describes the whole frame rather than each bar: a profile has
+    # no per-bar value, so the no-lookahead property does not apply to it.
+    "volume_profile": MetricSpec(volume_profile, OHLCV, "profile", {"buckets": 48}),
+    "value_area": MetricSpec(
+        value_area, OHLCV, "scalars", {"buckets": 48, "share": 0.70}
     ),
 }

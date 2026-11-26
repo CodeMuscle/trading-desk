@@ -99,6 +99,8 @@ def test_no_metric_ever_returns_nan_as_a_value():
             continue
         if spec.sparse:
             continue  # declared sparse: NaN means "no feature here", not a gap
+        if spec.returns in {"scalars", "profile"}:
+            continue  # frame-level descriptors, not per-bar series
         values = (
             result.value.values()
             if spec.returns == "dict_of_series"
