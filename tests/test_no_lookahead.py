@@ -100,4 +100,5 @@ def test_every_registered_metric_is_covered_by_this_test():
         "bearish_engulfing", "hammer", "shooting_star", "swing_pivots",
         "confirmed_swing_levels", "break_of_structure", "imbalance",
         "imbalance_bands", "volume_profile", "value_area",
+        "rsi", "macd", "true_range", "atr",
     }

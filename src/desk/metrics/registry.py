@@ -13,6 +13,7 @@ from typing import Any
 
 from desk.capabilities import Capability
 from desk.metrics.l1_trend import ema, session_vwap, trend_state
+from desk.metrics.l1_momentum import atr, macd, rsi, true_range
 from desk.metrics.l2_profile import value_area, volume_profile
 from desk.metrics.l4_structure import (
     break_of_structure,
@@ -38,8 +39,14 @@ class MetricSpec:
     returns: str
     defaults: dict[str, Any] = field(default_factory=dict)
     sparse: bool = False
-    """True when NaN in this metric's output means 'no such feature at this bar'
-    rather than 'measurement missing'.
+    """True when NaN in this metric's output is information rather than a gap.
+
+    Two legitimate cases, both declared here rather than skipped in a test:
+
+    - no such feature at this bar (a bar that is not a pivot, a bar with no
+      imbalance band)
+    - no value defined yet (the warmup window of a Wilder-smoothed average,
+      where the seed needs `length` observations before it exists)
 
     A pivot series is NaN on every bar that is not a pivot; an imbalance band is
     NaN on every bar with no imbalance. Both are statements about the series,
@@ -71,6 +78,12 @@ REGISTRY: dict[str, MetricSpec] = {
     ),
     # "scalars" describes the whole frame rather than each bar: a profile has
     # no per-bar value, so the no-lookahead property does not apply to it.
+    "rsi": MetricSpec(rsi, OHLCV, "series", {"length": 14}, sparse=True),
+    "macd": MetricSpec(
+        macd, OHLCV, "dict_of_series", {"fast": 12, "slow": 26, "signal": 9}
+    ),
+    "true_range": MetricSpec(true_range, OHLCV, "series", {}),
+    "atr": MetricSpec(atr, OHLCV, "series", {"length": 14}, sparse=True),
     "volume_profile": MetricSpec(volume_profile, OHLCV, "profile", {"buckets": 48}),
     "value_area": MetricSpec(
         value_area, OHLCV, "scalars", {"buckets": 48, "share": 0.70}

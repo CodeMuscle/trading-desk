@@ -115,7 +115,10 @@ def test_sparseness_is_declared_deliberately_and_stays_rare():
     # bar" is legitimate for pivots and bands; NaN meaning "I could not compute
     # this" is the thing the whole result type exists to prevent.
     sparse = {name for name, spec in REGISTRY.items() if spec.sparse}
-    assert sparse == {"swing_pivots", "confirmed_swing_levels", "imbalance_bands"}
+    assert sparse == {
+        "swing_pivots", "confirmed_swing_levels", "imbalance_bands",
+        "rsi", "atr",  # warmup: the Wilder seed needs `length` bars to exist
+    }
 
 
 def test_unavailable_requires_a_reason_so_the_ui_can_explain_itself():
