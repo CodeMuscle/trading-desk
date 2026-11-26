@@ -212,32 +212,81 @@ def test_rejects_an_unknown_selection_criterion():
         )
 
 
-def test_verdict_refuses_unstable_selection_even_when_profitable():
+def _fold(**over):
+    from desk.research.walk_forward import Fold
+
+    base = dict(
+        train_start=pd.Timestamp("2026-01-01", tz="UTC"),
+        train_end=pd.Timestamp("2026-02-01", tz="UTC"),
+        test_end=pd.Timestamp("2026-03-01", tz="UTC"),
+        selected={"step": 5}, train_sharpe=1.0, test_sharpe=0.5,
+        test_net=5000.0, test_trades=10,
+    )
+    base.update(over)
+    return Fold(**base)
+
+
+def test_verdict_refuses_when_no_axis_holds_even_when_profitable():
     """Stability outranks profit.
 
-    A procedure whose winner never repeats has no parameter set to deploy. Were
-    the verdict ordered the other way, a positive pooled net would hide that.
+    A procedure where no parameter repeats has nothing to deploy. Were the
+    verdict ordered the other way, a positive pooled net would hide that.
     """
-    from desk.research.walk_forward import Fold, WalkForwardResult
+    from desk.research.walk_forward import WalkForwardResult
 
     folds = tuple(
-        Fold(
-            train_start=pd.Timestamp("2026-01-01", tz="UTC"),
-            train_end=pd.Timestamp("2026-02-01", tz="UTC"),
-            test_end=pd.Timestamp("2026-03-01", tz="UTC"),
-            selected={"step": n}, train_sharpe=1.0, test_sharpe=0.5,
-            test_net=5000.0, test_trades=10,
-            test_returns=np.full(10, 0.01),
-        )
-        for n in range(4)
+        _fold(selected={"step": n}, test_returns=np.full(10, 0.01)) for n in range(4)
     )
     value = WalkForwardResult(
         folds=folds, trials=16, oos_sharpe=0.5, oos_net=20_000.0, oos_trades=40,
-        deflated_sharpe=0.99, stability=0.25, modal_params={"step": 0},
-        mean_degradation=0.5,
+        deflated_sharpe=0.99, stability=0.25, axis_stability={"step": 0.25},
+        modal_params={"step": 0}, mean_degradation=0.5,
     )
-    assert "stability" in value.verdict
-    assert "0.25" in value.verdict
+    assert "no parameter held a majority" in value.verdict
+    assert value.resolved_axes == ()
+
+
+def test_one_decided_axis_is_not_reported_as_total_instability():
+    """The case tuple-matching gets wrong.
+
+    Across four folds `use_candle` is False every time while the other two
+    parameters rotate, so exact-tuple stability is 0.25 and yet the test has
+    resolved something real. The verdict must name the resolved axis and move
+    on to the performance checks rather than refusing outright.
+    """
+    from desk.research.walk_forward import WalkForwardResult
+
+    picks = [
+        {"use_candle": False, "tp": 1.0, "stop": 1.5},
+        {"use_candle": False, "tp": 2.0, "stop": 2.0},
+        {"use_candle": False, "tp": 3.0, "stop": 1.5},
+        {"use_candle": False, "tp": 2.0, "stop": 2.5},
+    ]
+    folds = tuple(_fold(selected=p, test_returns=np.full(10, 0.01)) for p in picks)
+    value = WalkForwardResult(
+        folds=folds, trials=72, oos_sharpe=0.3, oos_net=25_000.0, oos_trades=86,
+        deflated_sharpe=0.42,
+        stability=0.25,
+        axis_stability={"use_candle": 1.0, "tp": 0.5, "stop": 0.5},
+        modal_params=picks[1], mean_degradation=-0.1,
+    )
+    assert value.resolved_axes == ("stop", "tp", "use_candle")
+    # Profitable and partly resolved, so the surviving refusal is the honest
+    # one: deflation, not a stability claim that misreads the fold table.
+    assert "not distinguishable from luck" in value.verdict
+
+    # Now make the two rotating axes genuinely unresolved.
+    rotating = WalkForwardResult(
+        folds=folds, trials=72, oos_sharpe=0.3, oos_net=25_000.0, oos_trades=86,
+        deflated_sharpe=0.99,
+        stability=0.25,
+        axis_stability={"use_candle": 1.0, "tp": 0.29, "stop": 0.29},
+        modal_params=picks[1], mean_degradation=-0.1,
+    )
+    assert rotating.resolved_axes == ("use_candle",)
+    assert rotating.unresolved_axes == ("stop", "tp")
+    assert "survives walk-forward" in rotating.verdict
+    assert "unresolved and still a choice" in rotating.verdict
 
 
 def test_verdict_refuses_below_the_trade_floor_before_anything_else():
@@ -254,8 +303,8 @@ def test_verdict_refuses_below_the_trade_floor_before_anything_else():
             ),
         ),
         trials=4, oos_sharpe=1.8, oos_net=9000.0, oos_trades=3,
-        deflated_sharpe=0.99, stability=1.0, modal_params={"step": 5},
-        mean_degradation=0.2,
+        deflated_sharpe=0.99, stability=1.0, axis_stability={"step": 1.0},
+        modal_params={"step": 5}, mean_degradation=0.2,
     )
     assert "below the sample floor" in value.verdict
 
@@ -295,8 +344,8 @@ def test_hit_rate_ignores_folds_with_no_score():
     value = WalkForwardResult(
         folds=(make(0.5, {"a": 1}), make(-0.2, {"a": 1}), make(float("nan"), None)),
         trials=3, oos_sharpe=0.1, oos_net=0.0, oos_trades=2,
-        deflated_sharpe=float("nan"), stability=1.0, modal_params={"a": 1},
-        mean_degradation=0.0,
+        deflated_sharpe=float("nan"), stability=1.0, axis_stability={"a": 1.0},
+        modal_params={"a": 1}, mean_degradation=0.0,
     )
     assert value.hit_rate == pytest.approx(0.5)  # 1 of 2 scored, not 1 of 3
 
@@ -342,3 +391,43 @@ def test_deflation_uses_the_observed_spread_of_trial_sharpes():
     assert math.isfinite(value.trial_sharpe_variance)
     assert value.trial_sharpe_variance > 0
     assert not any("spread" in n for n in value.notes)
+
+
+def test_axis_stability_is_computed_per_parameter():
+    """A real run, not a hand-built result object.
+
+    Two axes where one is decisive by construction: `target_mult` is ignored by
+    the rigged signal function, so whichever value wins is noise, while `step`
+    drives everything.
+    """
+    frame = ramp_frame(300)
+
+    def rigged(f, *, step, target_mult):
+        return every_nth(f, step=step, target_mult=3.0)
+
+    result = walk_forward(
+        frame, {"step": [5, 11], "target_mult": [2.0, 9.0]}, rigged,
+        costs=ZERO_COSTS, train_bars=150, test_bars=50, min_trades=4,
+    )
+    assert result.is_ok
+    value = result.value
+    assert set(value.axis_stability) == {"step", "target_mult"}
+    for score in value.axis_stability.values():
+        assert 0.0 < score <= 1.0
+    # step=5 trades far more often than step=11, so it clears the floor and wins
+    # every fold; the ignored axis cannot beat it.
+    assert value.axis_stability["step"] == 1.0
+
+
+def test_a_mostly_unscored_fold_table_says_so():
+    frame = ramp_frame(400)
+
+    def rare(f, *, step):
+        return every_nth(f, step=90)
+
+    result = walk_forward(
+        frame, {"step": [90]}, rare,
+        costs=ZERO_COSTS, train_bars=180, test_bars=40, min_trades=1,
+    )
+    assert result.is_ok
+    assert any("reached 1 out-of-sample" in n for n in result.value.notes)

@@ -84,7 +84,20 @@ class WalkForwardResult:
     deflated_sharpe: float
     stability: float
     """Fraction of deciding folds that picked the modal parameter set. 1.0 means
-    one parameter set won every time; 1/n means the winner never repeated."""
+    one parameter set won every time; 1/n means the winner never repeated.
+
+    Exact-tuple agreement, which is a demanding criterion on a multi-axis grid:
+    a procedure that is decisive about one parameter and indifferent to the rest
+    scores low here while still having something deployable. Read it next to
+    `axis_stability` rather than alone."""
+    axis_stability: dict[str, float]
+    """Per-parameter modal agreement across deciding folds.
+
+    This is the number that separates two situations the tuple figure conflates:
+    nothing is stable, versus one axis is decided and the others are unresolved.
+    An axis near 1.0 is a finding. An axis near 1/k, where k is how many values
+    it has, is an axis this test did not resolve, which is not the same as an
+    axis that does not matter."""
     modal_params: dict[str, Any] | None
     mean_degradation: float
     trial_sharpe_variance: float = float("nan")
@@ -101,12 +114,28 @@ class WalkForwardResult:
         return sum(1 for f in scored if f.test_sharpe > 0) / len(scored)
 
     @property
+    def resolved_axes(self) -> tuple[str, ...]:
+        """Parameters whose winner repeated in a majority of deciding folds."""
+        return tuple(sorted(k for k, v in self.axis_stability.items() if v >= 0.5))
+
+    @property
+    def unresolved_axes(self) -> tuple[str, ...]:
+        return tuple(sorted(k for k, v in self.axis_stability.items() if v < 0.5))
+
+    @property
     def verdict(self) -> str:
         """One line, erring toward refusal.
 
         Order matters. Stability is checked before performance because an
-        unstable procedure has no parameter set to deploy even when its pooled
+        unstable procedure has nothing to deploy even when its pooled
         out-of-sample numbers happen to be positive.
+
+        Stability is read per axis rather than on the parameter tuple. Exact
+        tuple agreement conflates two different findings: a procedure where
+        nothing holds, and one where a single parameter is decided every fold
+        while the others rotate. The second has a real result in it, so the
+        refusal fires only when no axis at all survives, and the unresolved axes
+        are named rather than folded into one number.
         """
         deciding = [f for f in self.folds if f.selected is not None]
         if not deciding:
@@ -116,11 +145,11 @@ class WalkForwardResult:
                 f"{self.oos_trades} out-of-sample trades across {len(deciding)} folds: "
                 "below the sample floor, so this is not evidence either way"
             )
-        if self.stability < 0.5:
+        if not self.resolved_axes:
             return (
-                f"parameter stability {self.stability:.2f}: the winner changed in more "
-                f"than half of {len(deciding)} folds, so there is no parameter set to "
-                "deploy regardless of the pooled result"
+                f"no parameter held a majority across {len(deciding)} folds "
+                f"(tuple stability {self.stability:.2f}): nothing here is deployable, "
+                "whatever the pooled result says"
             )
         if self.oos_net <= 0:
             return (
@@ -130,12 +159,20 @@ class WalkForwardResult:
         if self.deflated_sharpe < 0.95:
             return (
                 f"out-of-sample deflated Sharpe {self.deflated_sharpe:.2f} below 0.95 at "
-                f"{self.trials} trials: profitable but not distinguishable from luck"
+                f"{self.trials} trials: profitable out of sample, with "
+                f"{', '.join(self.resolved_axes)} resolved, but not distinguishable "
+                "from luck"
             )
+        unresolved = (
+            f"; {', '.join(self.unresolved_axes)} unresolved and still a choice"
+            if self.unresolved_axes
+            else ""
+        )
         return (
             f"survives walk-forward: net {self.oos_net:,.0f} over {self.oos_trades} "
-            f"out-of-sample trades, stability {self.stability:.2f}, deflated Sharpe "
-            f"{self.deflated_sharpe:.2f}. Belongs on the shelf unenabled."
+            f"out-of-sample trades, {', '.join(self.resolved_axes)} resolved, deflated "
+            f"Sharpe {self.deflated_sharpe:.2f}{unresolved}. Belongs on the shelf "
+            "unenabled."
         )
 
 
@@ -350,11 +387,15 @@ def walk_forward(
         )
 
     decided = [f.selected for f in folds if f.selected is not None]
+    axis_stability: dict[str, float] = {}
     if decided:
         counted = Counter(tuple(sorted(p.items())) for p in decided)
         modal_key, modal_count = counted.most_common(1)[0]
         modal: dict[str, Any] | None = dict(modal_key)
         stability = modal_count / len(decided)
+        for name in space:
+            per_axis = Counter(p[name] for p in decided)
+            axis_stability[name] = per_axis.most_common(1)[0][1] / len(decided)
     else:
         modal, stability = None, float("nan")
         notes.append("every fold failed to select; the procedure never ran")
@@ -364,6 +405,14 @@ def walk_forward(
         notes.append(
             f"{skipped} of {len(folds)} folds could not select a parameter set and "
             "contributed no out-of-sample trades"
+        )
+
+    scored = sum(1 for f in folds if math.isfinite(f.test_sharpe))
+    if folds and scored * 2 < len(folds):
+        notes.append(
+            f"only {scored} of {len(folds)} folds reached {min_trades} out-of-sample "
+            "trades, so the per-fold hit rate and degradation describe a minority of "
+            "the test; the pooled figures are the ones with a sample behind them"
         )
 
     degradations = [f.degradation for f in folds if math.isfinite(f.degradation)]
@@ -377,6 +426,7 @@ def walk_forward(
             oos_trades=int(sum(f.test_trades for f in folds)),
             deflated_sharpe=dsr,
             stability=stability,
+            axis_stability=axis_stability,
             modal_params=modal,
             mean_degradation=float(np.mean(degradations)) if degradations else float("nan"),
             trial_sharpe_variance=spread,
