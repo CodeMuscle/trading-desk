@@ -83,9 +83,13 @@ def test_the_registry_listing_exposes_every_metric_and_its_requirements(client):
     r = client.get("/metrics")
     assert r.status_code == 200
     body = r.json()
+    from desk.metrics.registry import REGISTRY
+
     names = {m["name"] for m in body["metrics"]}
+    # Compared against the registry rather than a literal, so adding a metric
+    # does not break an unrelated test every milestone.
+    assert names == set(REGISTRY)
     assert "swing_pivots" in names
-    assert len(names) == 8
     ema = next(m for m in body["metrics"] if m["name"] == "ema")
     assert ema["requires"] == ["ohlcv"]
     assert ema["defaults"] == {"length": 20}

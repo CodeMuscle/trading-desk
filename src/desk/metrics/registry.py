@@ -13,6 +13,12 @@ from typing import Any
 
 from desk.capabilities import Capability
 from desk.metrics.l1_trend import ema, session_vwap, trend_state
+from desk.metrics.l4_structure import (
+    break_of_structure,
+    confirmed_swing_levels,
+    imbalance,
+    imbalance_bands,
+)
 from desk.metrics.l4_price_action import (
     bearish_engulfing,
     bullish_engulfing,
@@ -30,6 +36,15 @@ class MetricSpec:
     requires: frozenset[Capability]
     returns: str
     defaults: dict[str, Any] = field(default_factory=dict)
+    sparse: bool = False
+    """True when NaN in this metric's output means 'no such feature at this bar'
+    rather than 'measurement missing'.
+
+    A pivot series is NaN on every bar that is not a pivot; an imbalance band is
+    NaN on every bar with no imbalance. Both are statements about the series,
+    not gaps in it. Everything else must never emit NaN and must say
+    unavailable(reason) instead, so this flag has to be set deliberately per
+    metric rather than skipped per metric in a test."""
 
 
 REGISTRY: dict[str, MetricSpec] = {
@@ -40,5 +55,17 @@ REGISTRY: dict[str, MetricSpec] = {
     "bearish_engulfing": MetricSpec(bearish_engulfing, OHLCV, "series_bool", {}),
     "hammer": MetricSpec(hammer, OHLCV, "series_bool", {}),
     "shooting_star": MetricSpec(shooting_star, OHLCV, "series_bool", {}),
-    "swing_pivots": MetricSpec(swing_pivots, OHLCV, "dict_of_series", {"lookback": 10}),
+    "swing_pivots": MetricSpec(
+        swing_pivots, OHLCV, "dict_of_series", {"lookback": 10}, sparse=True
+    ),
+    "confirmed_swing_levels": MetricSpec(
+        confirmed_swing_levels, OHLCV, "dict_of_series", {"lookback": 10}, sparse=True
+    ),
+    "break_of_structure": MetricSpec(
+        break_of_structure, OHLCV, "series", {"lookback": 10}
+    ),
+    "imbalance": MetricSpec(imbalance, OHLCV, "series", {}),
+    "imbalance_bands": MetricSpec(
+        imbalance_bands, OHLCV, "dict_of_series", {}, sparse=True
+    ),
 }

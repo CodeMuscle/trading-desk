@@ -97,8 +97,8 @@ def test_no_metric_ever_returns_nan_as_a_value():
         result = spec.fn(frame, **spec.defaults)
         if not result.is_ok:
             continue
-        if name == "swing_pivots":
-            continue  # NaN here means "not a pivot", documented in l4_price_action
+        if spec.sparse:
+            continue  # declared sparse: NaN means "no feature here", not a gap
         values = (
             result.value.values()
             if spec.returns == "dict_of_series"
@@ -106,6 +106,14 @@ def test_no_metric_ever_returns_nan_as_a_value():
         )
         for series in values:
             assert not series.isna().any(), f"{name} emitted NaN; use unavailable() instead"
+
+
+def test_sparseness_is_declared_deliberately_and_stays_rare():
+    # Growing this set is a reviewed decision. NaN meaning "no feature at this
+    # bar" is legitimate for pivots and bands; NaN meaning "I could not compute
+    # this" is the thing the whole result type exists to prevent.
+    sparse = {name for name, spec in REGISTRY.items() if spec.sparse}
+    assert sparse == {"swing_pivots", "confirmed_swing_levels", "imbalance_bands"}
 
 
 def test_unavailable_requires_a_reason_so_the_ui_can_explain_itself():

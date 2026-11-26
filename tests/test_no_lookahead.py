@@ -91,4 +91,6 @@ def test_every_registered_metric_is_covered_by_this_test():
     assert set(REGISTRY) == {
         "ema", "trend_state", "session_vwap", "bullish_engulfing",
         "bearish_engulfing", "hammer", "shooting_star", "swing_pivots",
+        "confirmed_swing_levels", "break_of_structure", "imbalance",
+        "imbalance_bands",
     }
