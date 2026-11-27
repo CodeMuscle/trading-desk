@@ -211,20 +211,54 @@ def test_replaying_the_same_bars_changes_nothing(store):
     assert first.bars_processed == len(frame.data)
 
 
-def test_the_journal_records_how_stale_each_fill_was(store):
+def test_lag_is_recorded_for_the_newest_bar_and_null_for_backfill(store):
+    """Lag is a fact about the poller, not about history.
+
+    A first run backfills hundreds of bars. Stamping each with the gap to the
+    wall clock reports a two-month backfill as a poller two months late, and a
+    column that cannot tell "late" from "backfilled" has its reader conclude the
+    desk is permanently broken. NULL is the honest value for catch-up.
+    """
     frame = trending_frame(60)
     store.create("acct", venue="fixture", starting_equity=50_000.0)
     engine = PaperEngine(store, "acct", costs=CostModel())
 
     # A wall clock two hours past the last bar: the poller was late.
     late = frame.data.index[-1].to_pydatetime() + timedelta(hours=2)
-    engine.advance(frame, intents_every(frame, 5), now=late)
+    engine.advance(frame, intents_every(frame, 5), now=late, max_staleness=None)
 
     journal = store.journal("acct")
-    assert not journal.empty
-    assert journal["lag_seconds"].notna().all()
-    # Every fill is older than the wall clock, so every lag is positive.
-    assert (journal["lag_seconds"] > 0).all()
+    assert len(journal) > 1
+    # No fill resolved on the frame's final bar, so nothing in this backfill has
+    # an observed lag. The comparison is against the newest bar processed, not
+    # the newest bar that produced a fill: a batch whose last trade closed days
+    # before its final bar is still a backfill throughout.
+    assert journal["lag_seconds"].isna().all()
+
+    # Now a genuinely live step: one new closed bar that resolves a position.
+    import dataclasses
+
+    extended = frame.data.copy()
+    step = pd.Timedelta(seconds=frame.timeframe_seconds())
+    last_close = float(extended["close"].iloc[-1])
+    extended.loc[extended.index[-1] + step] = {
+        "open": last_close, "high": last_close + 0.5,
+        "low": last_close - 0.5, "close": last_close, "volume": 1.0,
+    }
+    live_frame = dataclasses.replace(frame, data=extended)
+    fresh = live_frame.data.index[-1]
+    engine.advance(
+        live_frame,
+        [
+            Intent(
+                index=fresh, side=Side.LONG,
+                entry=last_close, stop=last_close - 100.0, target=last_close + 100.0,
+            )
+        ],
+        now=fresh.to_pydatetime() + step + timedelta(minutes=7),
+        max_staleness=None,
+    )
+    assert store.load("acct").position is not None
 
 
 def test_the_account_ceiling_is_enforced(store):
@@ -292,3 +326,169 @@ def test_saving_an_account_that_was_deleted_is_an_error_not_a_silent_noop(store)
     store.delete("acct")
     with pytest.raises(ValueError, match="does not exist"):
         store.save(record)
+
+
+def _at(frame, bars_after_last: float):
+    """A wall clock positioned relative to the frame's last bar open."""
+    step = pd.Timedelta(seconds=frame.timeframe_seconds())
+    return frame.data.index[-1].to_pydatetime() + step * bars_after_last
+
+
+def test_the_forming_bar_is_held_back(store):
+    frame = trending_frame(40)
+    store.create("acct", venue="fixture", starting_equity=50_000.0)
+    engine = PaperEngine(store, "acct", costs=CostModel())
+
+    # Halfway through the final bar's interval: it has not closed.
+    mid = _at(frame, 0.5)
+    result = engine.advance(frame, [], now=mid, max_staleness=None).value
+
+    assert result.bars_forming == 1
+    assert result.bars_processed == len(frame.data) - 1
+    assert engine.state().last_bar == frame.data.index[-2]
+
+
+def test_a_held_back_bar_is_processed_once_it_closes(store):
+    frame = trending_frame(40)
+    store.create("acct", venue="fixture", starting_equity=50_000.0)
+    engine = PaperEngine(store, "acct", costs=CostModel())
+
+    engine.advance(frame, [], now=_at(frame, 0.5), max_staleness=None)
+    second = engine.advance(frame, [], now=_at(frame, 1.1), max_staleness=None).value
+
+    assert second.bars_forming == 0
+    assert second.bars_processed == 1
+    assert engine.state().last_bar == frame.data.index[-1]
+
+
+def test_provisional_extremes_on_a_forming_bar_cannot_lock_in_a_wrong_exit(store):
+    """The bug the forming-bar guard exists to prevent.
+
+    A bar fetched mid-interval has a provisional high and low. Resolving a stop
+    against them and advancing `last_bar` means the corrected version arriving
+    next call is skipped as already-seen, so a transient wrong answer becomes a
+    permanent one. Here the provisional low would stop the position out; the
+    final low does not.
+    """
+    import dataclasses
+
+    frame = trending_frame(40)
+    index = frame.data.index
+    entry = float(frame.data["close"].iloc[30])
+    intent = Intent(
+        index=index[30], side=Side.LONG,
+        entry=entry, stop=entry - 3.0, target=entry + 40.0,
+    )
+
+    store.create("acct", venue="fixture", starting_equity=50_000.0)
+    engine = PaperEngine(store, "acct", costs=CostModel())
+
+    # Fetch mid-interval. The final bar's provisional low sits under the stop.
+    provisional = frame.data.copy()
+    provisional.iloc[-1, provisional.columns.get_loc("low")] = entry - 10.0
+    mid = engine.advance(
+        dataclasses.replace(frame, data=provisional),
+        [intent], now=_at(frame, 0.5), max_staleness=None,
+    ).value
+
+    assert mid.bars_forming == 1
+    assert not any(f.outcome == "stop" for f in mid.fills)
+    assert store.load("acct").position is not None
+
+    # The bar closes and the spike was never real: the low recovered.
+    corrected = frame.data.copy()
+    corrected.iloc[-1, corrected.columns.get_loc("low")] = entry - 1.0
+    final = engine.advance(
+        dataclasses.replace(frame, data=corrected),
+        [intent], now=_at(frame, 1.1), max_staleness=None,
+    ).value
+
+    assert final.bars_processed == 1
+    # Still open. Had the provisional bar been processed, this would have been
+    # stopped out at a price the market never printed.
+    assert store.load("acct").position is not None
+    assert not any(f.outcome == "stop" for f in final.fills)
+
+
+def test_replay_mode_processes_every_bar(store):
+    frame = trending_frame(40)
+    store.create("acct", venue="fixture", starting_equity=50_000.0)
+    engine = PaperEngine(store, "acct", costs=CostModel())
+
+    result = engine.advance(
+        frame, [], now=_at(frame, 0.5),
+        closed_bars_only=False, max_staleness=None,
+    ).value
+    assert result.bars_forming == 0
+    assert result.bars_processed == len(frame.data)
+
+
+def test_a_stale_frame_is_refused_rather_than_traded(store):
+    """A fetch that failed and returned cached data must not look like a quiet
+    market once it is in the journal."""
+    import dataclasses
+    from datetime import timedelta
+
+    frame = trending_frame(40)
+    old = dataclasses.replace(
+        frame, as_of=frame.as_of - timedelta(seconds=frame.timeframe_seconds() * 5)
+    )
+
+    store.create("acct", venue="fixture", starting_equity=50_000.0)
+    engine = PaperEngine(store, "acct", costs=CostModel())
+    result = engine.advance(old, [])
+
+    assert result.is_error
+    assert "Refusing rather than trading it" in str(result.error)
+    # Nothing was written: the account is untouched.
+    assert engine.state().last_bar is None
+    assert engine.state().equity == pytest.approx(50_000.0)
+
+
+def test_lag_is_recorded_when_a_fill_lands_on_the_newest_bar(store):
+    """The positive case for the lag column.
+
+    A position opened earlier and resolved on the batch's final bar is exactly
+    the live situation the column exists for: the gap between that bar closing
+    and the engine reacting is how late the poller was.
+    """
+    import dataclasses
+
+    frame = trending_frame(40)
+    step = pd.Timedelta(seconds=frame.timeframe_seconds())
+    entry = float(frame.data["close"].iloc[-1])
+
+    store.create("acct", venue="fixture", starting_equity=50_000.0)
+    engine = PaperEngine(store, "acct", costs=CostModel())
+
+    # Open on the final bar of the first batch.
+    opening = Intent(
+        index=frame.data.index[-1], side=Side.LONG,
+        entry=entry, stop=entry - 2.0, target=entry + 3.0,
+    )
+    engine.advance(
+        frame, [opening],
+        now=frame.data.index[-1].to_pydatetime() + step, max_staleness=None,
+    )
+    assert store.load("acct").position is not None
+    assert store.journal("acct").empty
+
+    # One new bar that gaps through the target, so it resolves on that bar.
+    extended = frame.data.copy()
+    extended.loc[extended.index[-1] + step] = {
+        "open": entry + 6.0, "high": entry + 7.0,
+        "low": entry + 5.0, "close": entry + 6.5, "volume": 1.0,
+    }
+    newest = extended.index[-1]
+    engine.advance(
+        dataclasses.replace(frame, data=extended), [],
+        now=newest.to_pydatetime() + step + timedelta(minutes=9),
+        max_staleness=None,
+    )
+
+    journal = store.journal("acct")
+    assert len(journal) == 1
+    lag = journal["lag_seconds"].iloc[0]
+    assert lag is not None and lag == lag  # not NULL, not NaN
+    # The bar's own duration plus the nine minutes the poller was late.
+    assert lag == pytest.approx(step.total_seconds() + 9 * 60)

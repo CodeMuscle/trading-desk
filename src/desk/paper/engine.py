@@ -25,7 +25,7 @@ about the venue.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -47,6 +47,13 @@ class AdvanceResult:
     """Bars at or before `last_bar`, already applied on an earlier call. A live
     poller re-fetches overlapping windows by design, so this is the normal case
     and not a warning."""
+    bars_forming: int
+    """Bars whose close time has not passed yet, held back for a later call.
+
+    Normally 1 in live mode and 0 on historical replay. A bar that has not closed
+    is not yet a bar: its high and low can still move, so resolving a stop
+    against it decides the trade on a version of history that will be overwritten
+    within the hour."""
     fills: tuple[Fill, ...]
     refusals: tuple[tuple[pd.Timestamp, str], ...]
     equity: float
@@ -82,17 +89,50 @@ class PaperEngine:
         intents: list[Intent],
         *,
         now: datetime | None = None,
+        closed_bars_only: bool = True,
+        max_staleness: float | None = 2.0,
     ) -> MetricResult:
-        """Apply every bar in `frame` newer than the account's last processed bar.
+        """Apply every closed bar in `frame` newer than the account's last.
 
         Bars at or before `last_bar` are skipped rather than replayed. Replaying
         one charges its commission twice and resolves its stop twice, and a live
         poller overlaps windows on every call, so idempotency here is a
         correctness requirement rather than an optimisation.
+
+        `closed_bars_only` holds back the bar still forming, and it interacts with
+        that idempotency in the one way that actually bites. A bar fetched
+        mid-interval has a provisional high and low. Process it and `last_bar`
+        advances past it, so the corrected version arriving on the next call is
+        skipped as already-seen, and a stop resolved against the provisional
+        extremes is locked in against a version of history that no longer exists.
+        Holding the forming bar back is therefore not a refinement; without it the
+        idempotency guard turns a transient wrong answer into a permanent one.
+
+        Pass False only for historical replay, where every bar in the frame is
+        final by construction.
+
+        `max_staleness` refuses a frame whose `as_of` is older than that multiple
+        of the timeframe, because a poller that silently failed and returned a
+        cached frame should not look like a quiet market. None disables the check
+        for replay.
         """
         record = self.store.load(self.account)
         if record is None:
             return failed(ValueError(f"account {self.account!r} does not exist"))
+
+        wall_clock = now or datetime.now(timezone.utc)
+        if max_staleness is not None and frame.is_stale(
+            wall_clock, tolerance_multiple=max_staleness
+        ):
+            age = (wall_clock - frame.as_of).total_seconds()
+            return failed(
+                ValueError(
+                    f"frame for {frame.symbol} {frame.timeframe} is {age:.0f}s old, "
+                    f"beyond {max_staleness}x the timeframe. Refusing rather than "
+                    "trading it: a fetch that failed and returned cached data is "
+                    "indistinguishable from a quiet market once it is in the journal."
+                )
+            )
 
         atr_result = atr_metric(frame)
         if not atr_result.is_ok:
@@ -119,17 +159,24 @@ class PaperEngine:
         close = frame.data["close"].to_numpy()
         by_bar = {i.index: i for i in intents}
 
-        wall_clock = now or datetime.now(timezone.utc)
         fills: list[Fill] = []
+        pending: list[tuple[pd.Timestamp, Fill, float]] = []
         refusals: list[tuple[pd.Timestamp, str]] = []
         skipped = 0
         processed = 0
+        forming = 0
         last_bar = record.last_bar
+        bar_seconds = frame.timeframe_seconds()
 
         for i, timestamp in enumerate(index):
             if last_bar is not None and timestamp <= last_bar:
                 skipped += 1
                 continue
+            if closed_bars_only:
+                closes_at = timestamp.to_pydatetime() + timedelta(seconds=bar_seconds)
+                if wall_clock < closes_at:
+                    forming += 1
+                    continue
 
             bar = Bar(
                 timestamp=timestamp,
@@ -148,19 +195,38 @@ class PaperEngine:
 
             if outcome.fill is not None:
                 fills.append(outcome.fill)
-                lag = (wall_clock - timestamp.to_pydatetime()).total_seconds()
-                self.store.record_fill(
-                    self.account, outcome.fill,
-                    symbol=frame.symbol, timeframe=frame.timeframe,
-                    equity_after=sim.equity,
-                    lag_seconds=lag if np.isfinite(lag) else None,
-                )
+                # Buffered rather than written here, because whether a fill's lag
+                # is meaningful is only known once the batch ends. See below.
+                pending.append((timestamp, outcome.fill, sim.equity))
             if outcome.refusal is not None:
                 refusals.append((timestamp, outcome.refusal))
                 self.store.record_refusal(
                     self.account, symbol=frame.symbol,
                     bar_index=timestamp, reason=outcome.refusal,
                 )
+
+        # Processing lag is only a fact about the poller for the newest bar in the
+        # batch, which is the one a live run is reacting to. Every earlier bar in
+        # the same call is historical catch-up, and stamping it with the gap to
+        # the wall clock reports a backfill of two months as a poller two months
+        # late. NULL is the honest value there: the lag was not observed, and a
+        # journal column that cannot distinguish "late" from "backfilled" would
+        # have a reader conclude the desk is permanently broken.
+        # Compared against the newest bar *processed*, not the newest bar that
+        # happened to produce a fill. A backfill whose last trade closed six days
+        # before the batch's final bar is still a backfill, and an earlier draft
+        # of this compared against the latest fill and so reported that trade as
+        # six days late.
+        for timestamp, fill, equity_after in pending:
+            lag: float | None = None
+            if last_bar is not None and timestamp == last_bar:
+                measured = (wall_clock - timestamp.to_pydatetime()).total_seconds()
+                lag = measured if np.isfinite(measured) else None
+            self.store.record_fill(
+                self.account, fill,
+                symbol=frame.symbol, timeframe=frame.timeframe,
+                equity_after=equity_after, lag_seconds=lag,
+            )
 
         self.store.save(
             replace(
@@ -179,6 +245,7 @@ class PaperEngine:
             AdvanceResult(
                 bars_processed=processed,
                 bars_skipped=skipped,
+                bars_forming=forming,
                 fills=tuple(fills),
                 refusals=tuple(refusals),
                 equity=sim.equity,
