@@ -24,6 +24,7 @@ import { renderDesk } from "./desk";
 import { DEFAULT_OPEN, GROUPS, PATTERNS, ungrouped } from "./groups";
 import { applyTheme, isDarkNow, mountThemeToggle, readTheme } from "./theme";
 import { mountTools, type DrawingSurface } from "./tools";
+import { VolumePills } from "./volume";
 import {
   DEFAULT_VIEW,
   renderRail,
@@ -45,6 +46,8 @@ export type DeskState = {
   /** Its own pane, not an overlay on price. Volume shares no units with price,
    *  so putting them on one scale makes whichever is larger flatten the other. */
   volume: SeriesApi | null;
+  /** Draws the pills. The series above owns the pane and its scale. */
+  pills: VolumePills | null;
 };
 
 /** Follows design/tokens.css, which is dark-first and switches only on an
@@ -54,18 +57,51 @@ function isDark(): boolean {
   return isDarkNow();
 }
 
+/** Pixels per bar at the default zoom, and empty bars kept to the right.
+ *
+ * Measured off a TradingView BTC chart rather than guessed: its weekly view
+ * fitted roughly 230 bars across a 1350px plot, a shade under 6px a bar, and
+ * it leaves about ten bars of space after the last candle so the most recent
+ * price is not pressed against the axis. */
+const BAR_SPACING_PX = 6;
+const RIGHT_OFFSET_BARS = 10;
+
+/** How far from spot a zone may sit and still be drawn, as a fraction. */
+const MAX_ZONE_DISTANCE = 0.2;
+
 function token(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+/** The chart's own chrome, kept in step with the page's type scale.
+ *
+ * The time axis shipped at its default height with the library's default font,
+ * and at full history that put a date label on nearly every gridline with no
+ * room between them: the strip read as a smear rather than a scale. Giving it
+ * height and a size that matches the rest of the desk lets the library thin
+ * the labels out instead of packing them.
+ */
+function chrome() {
+  return {
+    theme: {
+      ...(isDark() ? darkTheme : lightTheme),
+      axisFontSize: 11,
+    },
+    timeAxisHeight: 28,
+    priceAxisWidth: 64,
+    timeScale: {
+      barSpacing: BAR_SPACING_PX,
+      rightOffset: RIGHT_OFFSET_BARS,
+    },
+  };
+}
+
 export function mount(container: HTMLElement, kind: SeriesKind = "candlestick"): DeskState {
-  const chart = createChart(container, {
-    theme: isDark() ? darkTheme : lightTheme,
-  });
+  const chart = createChart(container, chrome());
   const candles = chart.addSeries(kind);
   return {
     chart, candles, overlays: new Map(),
-    markers: candles.createMarkers(), zoneLines: [], fibLines: [], volume: null,
+    markers: candles.createMarkers(), zoneLines: [], fibLines: [], volume: null, pills: null,
   };
 }
 
@@ -78,12 +114,6 @@ export function mount(container: HTMLElement, kind: SeriesKind = "candlestick"):
  * instead, which is what `fitContent` does, squashes twenty thousand bars into
  * the window and shows a hairline.
  */
-const BAR_SPACING_PX = 6;
-const RIGHT_OFFSET_BARS = 10;
-
-/** How far from spot a zone may sit and still be drawn, as a fraction. */
-const MAX_ZONE_DISTANCE = 0.2;
-
 /** Numeric points only. A boolean or string metric is not a line. */
 function lineData(response: MetricResponse): { time: number; value: number }[] {
   return response.points
@@ -393,19 +423,29 @@ export function drawVolume(state: DeskState, bars: Bar[], show: boolean): void {
   if (!show) {
     state.volume?.remove();
     state.volume = null;
+    if (state.pills) {
+      state.chart.removePrimitive(state.pills as never);
+      state.pills = null;
+    }
     return;
   }
   if (!state.volume) {
     state.volume = state.chart.addSeries("histogram", { paneIndex: 1 });
   }
-  const up = token("--pos-soft") || "rgba(47,191,132,0.4)";
-  const down = token("--neg-soft") || "rgba(232,82,79,0.4)";
+  // The series is drawn transparent and kept only for what it owns: the second
+  // pane, its price scale, and the autoscale the axis labels. The pills are a
+  // primitive because a histogram has no corner radius to set.
   state.volume.setData(
-    bars.map((bar) => ({
-      time: bar.time,
-      value: bar.volume,
-      color: bar.close >= bar.open ? up : down,
-    })),
+    bars.map((bar) => ({ time: bar.time, value: bar.volume, color: "transparent" })),
+  );
+  if (!state.pills) {
+    state.pills = new VolumePills();
+    state.chart.addPrimitive(state.pills as never, 1);
+  }
+  state.pills.setData(
+    bars,
+    token("--pos") || "#2FBF84",
+    token("--neg") || "#E8524F",
   );
 }
 
@@ -436,7 +476,7 @@ export function renderPanel(
     head.type = "button";
     head.className = "mhead";
     head.setAttribute("aria-expanded", String(open[key] ?? true));
-    // A CSS triangle rather than a glyph. JetBrains Mono has no ▾, so the
+    // A CSS triangle rather than a glyph. JetBrains Mono has no caret, so the
     // character fell back to a dot and the header read as a bullet list.
     const caret = document.createElement("span");
     caret.className = open[key] ?? true ? "caret is-open" : "caret";
@@ -492,6 +532,8 @@ export async function boot(
   let allTrades: Trade[] = [];
   let bars: Bar[] = [];
   const open: Record<string, boolean> = { ...DEFAULT_OPEN };
+  /** The instrument and timeframe the current viewport was framed for. */
+  let framedFor = "";
 
   async function refreshDesk(): Promise<void> {
     if (!deskRoot) return;
@@ -545,8 +587,18 @@ export async function boot(
     // Setting it once immediately after setData was not enough, because the
     // time scale had not taken the new length yet.
     drawVolume(state, bars, view.layers.volume);
-    showRecent(state, container, bars.length);
-    requestAnimationFrame(() => showRecent(state, container, bars.length));
+    // Reset the viewport only when the instrument or the timeframe changed.
+    //
+    // Resetting on every load threw away the zoom on operations that have
+    // nothing to do with the bars: switching a layer on triggers a reload, and
+    // the chart snapped back from wherever it had been panned to. That reads
+    // as the zoom changing by itself, because from the outside it did.
+    const instrument = `${symbol}|${timeframe}`;
+    if (instrument !== framedFor) {
+      framedFor = instrument;
+      showRecent(state, container, bars.length);
+      requestAnimationFrame(() => showRecent(state, container, bars.length));
+    }
 
     if (view.layers.ema) {
       overlay(state, "ema200", e200, token("--ink-dim") || "#555");
@@ -652,7 +704,7 @@ export async function boot(
       // The chart's own theme is set at construction, so it is re-applied
       // rather than rebuilt. Overlay and level colours are read from tokens
       // each time they are drawn, so a reload picks the new palette up.
-      state.chart.applyOptions({ theme: isDarkNow() ? darkTheme : lightTheme });
+      state.chart.applyOptions(chrome());
       void load();
     });
   }

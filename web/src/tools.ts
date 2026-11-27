@@ -162,18 +162,52 @@ export function mountTools(
   const wipe = document.createElement("button");
   wipe.type = "button";
   wipe.className = "tool-btn is-danger";
-  wipe.title = "Remove every drawing on this symbol and timeframe";
+  wipe.title =
+    "Delete the selected drawing, or every drawing on this symbol and " +
+    "timeframe when nothing is selected. Delete and Backspace do the same.";
   wipe.setAttribute("aria-label", "Clear drawings");
   wipe.innerHTML = glyph(() => chromeIconSvg("trash"), "clear");
   wipe.addEventListener("click", () => {
-    // Deliberately not confirmed in a dialog: a browser confirm() blocks the
-    // page, and the drawings are recoverable by redrawing rather than being
-    // data the desk cannot reproduce. The tooltip states the scope.
-    // clear() rather than removing one id at a time: both exist, and a single
-    // call cannot leave the chart half-wiped if one id is already gone.
+    // Deletes the selection when there is one, and only wipes everything when
+    // there is not. A button that always wipes is the one that loses an
+    // afternoon of levels because something was selected and the obvious thing
+    // was expected.
+    const ids = controller.selection();
+    if (ids.length > 0) {
+      controller.removeMany([...ids]);
+      return;
+    }
+    // Deliberately not behind a confirm(): a browser dialog blocks the page,
+    // and drawings are reproducible by redrawing rather than data the desk
+    // cannot recover. The tooltip states the scope.
+    //
+    // clear() rather than looping remove(): a single call cannot leave the
+    // chart half-wiped if an id has already gone.
     controller.clear();
   });
   root.append(wipe);
+
+  // Delete and Backspace remove the selected drawing, which is what every
+  // drawing program does and the only way to remove one without wiping the
+  // lot. Ignored while a text field has focus, so typing into a callout does
+  // not delete the callout.
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key !== "Delete" && event.key !== "Backspace") return;
+    const target = event.target as HTMLElement | null;
+    if (
+      target &&
+      (target.isContentEditable ||
+        ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+    ) {
+      return;
+    }
+    const selected = controller.selected?.();
+    const ids = Array.isArray(selected) ? selected : selected ? [selected] : [];
+    if (ids.length === 0) return;
+    event.preventDefault();
+    controller.removeMany(ids.map((d) => (typeof d === "string" ? d : d.id)));
+  };
+  window.addEventListener("keydown", onKey);
 
   paint();
 
