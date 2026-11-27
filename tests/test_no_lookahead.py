@@ -63,11 +63,13 @@ def test_metric_output_on_shared_bars_is_unchanged_by_truncation(name, cut):
         capabilities=full.capabilities,
     )
 
-    if spec.returns in {"scalars", "profile"}:
+    if spec.returns in {"scalars", "profile", "zones"}:
         pytest.skip(
             f"{name} describes the whole frame, not each bar. Truncating gives a "
             "different frame and therefore a legitimately different answer, so "
-            "the no-lookahead property has nothing to say about it."
+            "this particular comparison has nothing to say about it. Zones get "
+            "their own prefix test below, because the property does apply to "
+            "them, just not bar by bar."
         )
 
     full_result = spec.fn(full, **spec.defaults)
@@ -101,4 +103,56 @@ def test_every_registered_metric_is_covered_by_this_test():
         "confirmed_swing_levels", "break_of_structure", "imbalance",
         "imbalance_bands", "volume_profile", "value_area",
         "rsi", "macd", "true_range", "atr",
+        "supply_demand_zones", "fibonacci_levels",
     }
+
+
+def test_a_settled_zone_is_not_rescored_by_later_bars():
+    """The property that bounding the departure window buys.
+
+    Measuring a departure over every bar after the base makes a zone's score a
+    function of the whole future: the same base scores differently today than it
+    did last week, and a strategy reading it at bar i would be reading bars it
+    could not have seen. With `departure_within`, a zone is settled at a fixed
+    lag after its base and never moves again, which is the same confirmation
+    rule a swing pivot follows.
+
+    `tested` and `age_bars` are excluded on purpose. Both are as-of-now
+    properties: whether price has since returned, and how long ago this was, are
+    exactly the questions that should change as bars arrive.
+    """
+    from desk.metrics.l4_zones import supply_demand_zones
+
+    full = realistic_frame(200)
+    settled_by = 170
+    window = 10
+
+    short = OHLCVFrame(
+        data=full.data.iloc[:settled_by],
+        venue=full.venue, symbol=full.symbol, timeframe=full.timeframe,
+        as_of=full.as_of, capabilities=full.capabilities,
+    )
+
+    long_result = supply_demand_zones(full, departure_within=window)
+    short_result = supply_demand_zones(short, departure_within=window)
+    if not (long_result.is_ok and short_result.is_ok):
+        pytest.skip("no zones on this fixture")
+
+    cutoff = full.data.index[settled_by - window - 1]
+
+    def settled(result):
+        return {
+            z.end_index: (z.kind, z.top, z.bottom, z.departure_atr, z.base_bars)
+            for z in result.value
+            if z.end_index <= cutoff
+        }
+
+    in_short = settled(short_result)
+    in_full = settled(long_result)
+    shared = set(in_short) & set(in_full)
+    assert shared, "fixture produced no zone settled before the cut"
+    for key in shared:
+        assert in_short[key] == in_full[key], (
+            f"zone ending {key} was rescored by bars after it settled: "
+            f"{in_short[key]} became {in_full[key]}"
+        )

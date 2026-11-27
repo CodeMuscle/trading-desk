@@ -8,7 +8,7 @@ Zero paid data subscriptions · one Python metrics engine as the single source o
 a validation harness that has rejected every strategy it has been given, including the
 author's
 
-[![tests](https://img.shields.io/badge/tests-309%20passing%20%7C%206%20skipped-2FBF84?style=flat-square)](tests/)
+[![tests](https://img.shields.io/badge/tests-324%20passing%20%7C%2015%20skipped-2FBF84?style=flat-square)](tests/)
 [![python](https://img.shields.io/badge/python-3.13-5B9BD5?style=flat-square)](pyproject.toml)
 [![engine](https://img.shields.io/badge/engine-pandas%203.1%20%2F%20numpy%202.5-5B9BD5?style=flat-square)](pyproject.toml)
 [![strategies enabled](https://img.shields.io/badge/strategies%20enabled-0-E8524F?style=flat-square)](#the-scoreboard)
@@ -179,6 +179,8 @@ writing them down.
 | Cache never checked for age | chart served two-day-old candles under a live header | the engine marked all 18 metrics stale; the UI drew that as a dimmer colour |
 | `scalars` shape unhandled in UI | `value_area` rendered as `-` | identical to what *unavailable* renders, in a project whose premise is that the difference is visible |
 | `dict_of_series` rendered lengths | `macd:300 signal:300 hist:300` | three identical bar counts wearing the names of three different numbers |
+| Zone tested by its own departure | every zone tested, `fresh` always 0 | price moves continuously, so the bar leaving a shelf still touches it |
+| Unbounded zone departure window | a zone rescored by every future bar | same base scored differently each week; unusable in a backtest |
 
 ---
 
@@ -215,7 +217,8 @@ src/desk/
   result.py           the three-state return type everything uses
   capabilities.py     what a venue can answer, declared not assumed
   adapters/           market adapters; crypto (ccxt) is live
-  metrics/            trend · momentum · profile · price action · structure
+  metrics/            trend · momentum · profile · price action · structure ·
+                      supply/demand zones · Fibonacci anchored to real swings
   store/              OHLCVFrame, parquet cache, staleness
   risk/               fail-closed sizing and the limit table
   paper/simulator.py  the one bar-stepping simulator
@@ -242,7 +245,7 @@ web/                         the chart shell
 
 ```bash
 uv sync
-uv run pytest                               # 309 passing, 6 skipped
+uv run pytest                               # 324 passing, 15 skipped
 uv run python -m desk.api.app               # binds 127.0.0.1:8787
 cd web && npm install && npm run dev
 ```

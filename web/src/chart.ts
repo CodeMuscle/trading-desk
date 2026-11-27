@@ -6,9 +6,19 @@ import {
   type SeriesApi,
   type SeriesMarker,
   type SeriesMarkers,
+  type PriceLine,
 } from "openalgo-charts";
 
-import { BAR_CHOICES, DEFAULT_BARS, api, type Bar, type MetricResponse, type Point, type Trade } from "./api";
+import {
+  BAR_CHOICES,
+  DEFAULT_BARS,
+  api,
+  type Bar,
+  type MetricResponse,
+  type Point,
+  type Trade,
+  type Zone,
+} from "./api";
 import { renderDesk } from "./desk";
 
 export type DeskState = {
@@ -18,6 +28,9 @@ export type DeskState = {
   /** Created once and reused. setData clears the series, not this primitive,
    *  so markers survive a timeframe change and are reapplied explicitly. */
   markers: SeriesMarkers;
+  /** Tracked so a reload removes the previous set rather than stacking a new
+   *  one on top of it, which is how a chart ends up with forty lines on it. */
+  zoneLines: PriceLine[];
 };
 
 /** Follows design/tokens.css, which is dark-first and switches only on an
@@ -36,7 +49,10 @@ export function mount(container: HTMLElement): DeskState {
     theme: isDark() ? darkTheme : lightTheme,
   });
   const candles = chart.addSeries("candlestick");
-  return { chart, candles, overlays: new Map(), markers: candles.createMarkers() };
+  return {
+    chart, candles, overlays: new Map(),
+    markers: candles.createMarkers(), zoneLines: [],
+  };
 }
 
 /** Numeric points only. A boolean or string metric is not a line. */
@@ -78,6 +94,10 @@ function describe(response: MetricResponse): string {
     return Object.entries(response.scalars)
       .map(([name, value]) => `${name} ${fmt(value)}`)
       .join("  ");
+  }
+  if (response.zones) {
+    const fresh = response.fresh ?? response.zones.filter((z) => !z.tested).length;
+    return `${response.zones.length} zones  ${fresh} fresh`;
   }
   if (response.profile) {
     const poc = response.poc;
@@ -144,6 +164,61 @@ export function metricRow(response: MetricResponse): HTMLElement {
 
   row.append(key, value);
   return row;
+}
+
+/** Supply and demand zones as price lines bounding each band.
+ *
+ * Untested zones are drawn solid and tested ones dashed, because a zone price
+ * has already traded back through has had its resting orders filled and is a
+ * weaker argument than a fresh one. They are not hidden: how a level failed is
+ * information the next decision needs.
+ *
+ * Only the strongest few are drawn. A chart carrying every qualifying base is
+ * a chart where no level stands out, which is the failure mode that makes this
+ * kind of study useless in practice.
+ */
+export function drawZones(state: DeskState, zones: Zone[], keep = 6): void {
+  for (const line of state.zoneLines) state.chart.removePrimitive(line);
+  state.zoneLines = [];
+
+  // Ranked fresh first, then by recency, and only then by strength. Sorting by
+  // strength alone surfaces whichever ancient base happened to precede the
+  // largest move in the window, which is a fact about history rather than a
+  // level anyone is trading against. A zone price has already traded back
+  // through has had its resting orders filled, so it ranks below any untested
+  // one however violent its departure was.
+  const strongest = [...zones]
+    .sort((a, b) => {
+      if (a.tested !== b.tested) return a.tested ? 1 : -1;
+      if (a.age_bars !== b.age_bars) return a.age_bars - b.age_bars;
+      return b.departure_atr - a.departure_atr;
+    })
+    .slice(0, keep);
+
+  let n = 0;
+  for (const zone of strongest) {
+    const colour =
+      zone.kind === "demand" ? token("--pos") || "#2FBF84" : token("--neg") || "#E8524F";
+    for (const price of [zone.top, zone.bottom]) {
+      state.zoneLines.push(
+        state.chart.addPriceLine({
+          price,
+          color: colour,
+          lineWidth: 1,
+          dashed: zone.tested,
+          id: `zone-${n++}`,
+          // Only the band's upper edge is labelled. Labelling both puts two
+          // pills a few pixels apart saying the same thing.
+          label:
+            price === zone.top
+              ? `${zone.kind} ${zone.departure_atr.toFixed(1)}ATR${
+                  zone.tested ? " tested" : ""
+                }`
+              : undefined,
+        }),
+      );
+    }
+  }
 }
 
 /** Entry and exit markers for every trade in the journal.
@@ -239,6 +314,9 @@ export async function boot(
       metrics.map((spec) => api.metric(spec.name, symbol, timeframe, {}, limit)),
     );
     panel.replaceChildren(...responses.map(metricRow));
+
+    const zoneResponse = responses.find((r) => r.name === "supply_demand_zones");
+    drawZones(state, zoneResponse?.zones ?? []);
   }
 
   // Range and timeframe are controls rather than constants. The chart opened on

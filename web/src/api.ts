@@ -24,6 +24,18 @@ export type Point = { time: number; value: number | boolean | string };
 
 export type MetricState = "ok" | "unavailable" | "error";
 
+export type Zone = {
+  kind: "demand" | "supply";
+  top: number;
+  bottom: number;
+  start: number;
+  end: number;
+  departure_atr: number;
+  base_bars: number;
+  tested: boolean;
+  age_bars: number;
+};
+
 export type MetricResponse = {
   name: string;
   state: MetricState;
@@ -32,8 +44,11 @@ export type MetricResponse = {
   points: Point[];
   /** dict_of_series metrics: macd, imbalance_bands, confirmed_swing_levels. */
   series?: Record<string, Point[]>;
-  /** scalars metrics: value_area returns val/poc/vah/share_captured. */
+  /** scalars metrics: value_area, fibonacci_levels. */
   scalars?: Record<string, number>;
+  /** zones metrics: supply_demand_zones. */
+  zones?: Zone[];
+  fresh?: number;
   /** profile metrics: volume_profile returns price/volume buckets. */
   profile?: { price: number; volume: number }[];
   poc?: number;

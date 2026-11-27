@@ -172,6 +172,20 @@ def create_app(
                         for p, v in zip(result.value["price"], result.value["volume"])
                     ],
                     "poc": result.meta.get("poc"), "points": []}
+        if spec.returns == "zones":
+            return {"name": name, "state": "ok", "stale": result.stale,
+                    "zones": [
+                        {
+                            "kind": z.kind, "top": z.top, "bottom": z.bottom,
+                            "start": int(z.start_index.timestamp()),
+                            "end": int(z.end_index.timestamp()),
+                            "departure_atr": z.departure_atr,
+                            "base_bars": z.base_bars, "tested": z.tested,
+                            "age_bars": z.age_bars,
+                        }
+                        for z in result.value
+                    ],
+                    "fresh": result.meta.get("fresh"), "points": []}
         if spec.returns == "dict_of_series":
             return {"name": name, "state": "ok", "stale": result.stale,
                     "series": {k: _points(v) for k, v in result.value.items()},

@@ -15,6 +15,7 @@ from desk.capabilities import Capability
 from desk.metrics.l1_trend import ema, session_vwap, trend_state
 from desk.metrics.l1_momentum import atr, macd, rsi, true_range
 from desk.metrics.l2_profile import value_area, volume_profile
+from desk.metrics.l4_zones import fibonacci_levels, supply_demand_zones
 from desk.metrics.l4_structure import (
     break_of_structure,
     confirmed_swing_levels,
@@ -63,6 +64,13 @@ REGISTRY: dict[str, MetricSpec] = {
     "bearish_engulfing": MetricSpec(bearish_engulfing, OHLCV, "series_bool", {}),
     "hammer": MetricSpec(hammer, OHLCV, "series_bool", {}),
     "shooting_star": MetricSpec(shooting_star, OHLCV, "series_bool", {}),
+    "supply_demand_zones": MetricSpec(
+        supply_demand_zones, OHLCV, "zones",
+        {"base_max_bars": 3, "base_max_atr": 0.6, "departure_atr": 1.5},
+    ),
+    "fibonacci_levels": MetricSpec(
+        fibonacci_levels, OHLCV, "scalars", {"lookback": 10},
+    ),
     "swing_pivots": MetricSpec(
         swing_pivots, OHLCV, "dict_of_series", {"lookback": 10}, sparse=True
     ),
