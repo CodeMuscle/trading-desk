@@ -20,8 +20,8 @@ import pandas as pd
 
 from desk.backtest.costs import CostModel
 from desk.metrics.l1_momentum import atr as atr_metric
+from desk.paper.simulator import Bar, Fill, Simulator
 from desk.result import MetricResult, failed, ok
-from desk.risk.engine import AccountState, Position, size_for
 from desk.risk.limits import DEFAULT_LIMITS, RiskLimits
 from desk.store.frame import OHLCVFrame
 from desk.strategy.base import Intent, Side
@@ -48,6 +48,20 @@ class Trade:
     mfe: float
     """Maximum favourable excursion, in R. Losers with high MFE are an exit
     problem."""
+
+    @classmethod
+    def from_fill(cls, fill: Fill) -> Trade:
+        """Lift a simulator fill into the reporting type.
+
+        Field-for-field, so a field added to one and forgotten in the other is a
+        TypeError at the first trade rather than a column of zeroes in a report.
+        """
+        return cls(
+            entry_index=fill.entry_index, exit_index=fill.exit_index, side=fill.side,
+            units=fill.units, entry=fill.entry, exit=fill.exit, stop=fill.stop,
+            target=fill.target, outcome=fill.outcome, gross=fill.gross,
+            costs=fill.costs, mae=fill.mae, mfe=fill.mfe,
+        )
 
     @property
     def net(self) -> float:
@@ -118,122 +132,50 @@ def run_backtest(
     limits: RiskLimits = DEFAULT_LIMITS,
     cluster: str | None = None,
 ) -> MetricResult:
-    """Walk the frame, trading the given intents under the risk limits."""
+    """Walk the frame, trading the given intents under the risk limits.
+
+    This is a driver, not an engine. The per-bar logic lives in
+    `desk.paper.simulator`, which the paper engine also drives, so a backtest
+    result and a forward paper result are produced by the same arithmetic rather
+    than by two implementations that agree until one of them is edited.
+    """
     if starting_equity <= 0:
         return failed(ValueError("starting_equity must be positive"))
 
     atr_result = atr_metric(frame)
     if not atr_result.is_ok:
         return atr_result
-    atr_values = atr_result.value
+    atr_values = atr_result.value.to_numpy(dtype="float64")
 
     index = frame.data.index
     high = frame.data["high"].to_numpy()
     low = frame.data["low"].to_numpy()
     close = frame.data["close"].to_numpy()
-
     by_bar: dict[pd.Timestamp, Intent] = {i.index: i for i in intents}
 
-    equity = starting_equity
-    day_start = starting_equity
-    month_start = starting_equity
-    current_day = index[0].date() if len(index) else None
-    current_month = (index[0].year, index[0].month) if len(index) else None
+    sim = Simulator(
+        equity=starting_equity, costs=costs, limits=limits, cluster=cluster
+    )
 
     trades: list[Trade] = []
     refusals: list[tuple[pd.Timestamp, str]] = []
     equity_points: list[float] = []
-
-    open_trade: dict | None = None
+    last = len(index) - 1
 
     for i, timestamp in enumerate(index):
-        # Period rollovers, which reset the daily and monthly limit baselines.
-        if timestamp.date() != current_day:
-            current_day = timestamp.date()
-            day_start = equity
-        if (timestamp.year, timestamp.month) != current_month:
-            current_month = (timestamp.year, timestamp.month)
-            month_start = equity
-
-        if open_trade is not None:
-            side = open_trade["side"]
-            risk_per_unit = abs(open_trade["entry"] - open_trade["stop"])
-
-            # Track excursion on every bar the position is alive.
-            if side is Side.LONG:
-                open_trade["mae"] = max(open_trade["mae"], (open_trade["entry"] - low[i]) / risk_per_unit)
-                open_trade["mfe"] = max(open_trade["mfe"], (high[i] - open_trade["entry"]) / risk_per_unit)
-                hit_stop = low[i] <= open_trade["stop"]
-                hit_target = high[i] >= open_trade["target"]
-            else:
-                open_trade["mae"] = max(open_trade["mae"], (high[i] - open_trade["entry"]) / risk_per_unit)
-                open_trade["mfe"] = max(open_trade["mfe"], (open_trade["entry"] - low[i]) / risk_per_unit)
-                hit_stop = high[i] >= open_trade["stop"]
-                hit_target = low[i] <= open_trade["target"]
-
-            exit_price: float | None = None
-            outcome = ""
-            if hit_stop:
-                # Pessimistic when both are touched: the order is unknown
-                # without ticks, and only this reading cannot flatter.
-                exit_price, outcome = open_trade["stop"], "stop"
-            elif hit_target:
-                exit_price, outcome = open_trade["target"], "target"
-            elif i == len(index) - 1:
-                exit_price, outcome = float(close[i]), "end_of_data"
-
-            if exit_price is not None:
-                equity, trade = _close(
-                    open_trade, timestamp, exit_price, outcome, equity, costs, atr_values, i
-                )
-                trades.append(trade)
-                open_trade = None
-
-        intent = by_bar.get(timestamp)
-        if open_trade is None and intent is not None:
-            account = AccountState(
-                equity=equity,
-                starting_equity_day=day_start,
-                starting_equity_month=month_start,
-                positions=(),
-            )
-            decision = size_for(intent, account, cluster=cluster, limits=limits)
-            if decision.refused:
-                refusals.append((timestamp, decision.reasons[0] if decision.reasons else "refused"))
-            else:
-                bar_atr = float(atr_values.iloc[i])
-                if not math.isfinite(bar_atr):
-                    # ATR is not seeded yet, so slippage cannot be priced. Taking
-                    # the trade anyway multiplies a NaN into the fill, and from
-                    # there into equity, which never recovers: every later intent
-                    # is refused for a non-numeric account and the run reports one
-                    # trade and silence. Refuse this bar instead and say why.
-                    refusals.append(
-                        (
-                            timestamp,
-                            "ATR not seeded at this bar, so slippage cannot be "
-                            "priced; a trade that cannot be costed is not taken",
-                        )
-                    )
-                    equity_points.append(equity)
-                    continue
-                slip = costs.slippage(bar_atr)
-                # Entry fills worse than the signal price, in the direction
-                # that hurts.
-                fill = intent.entry + slip if intent.side is Side.LONG else intent.entry - slip
-                open_trade = {
-                    "entry_index": timestamp,
-                    "side": intent.side,
-                    "units": decision.units,
-                    "entry": fill,
-                    "stop": intent.stop,
-                    "target": intent.target,
-                    "mae": 0.0,
-                    "mfe": 0.0,
-                    "entry_commission": costs.commission(fill * decision.units),
-                }
-
-        equity_points.append(equity)
+        bar = Bar(
+            timestamp=timestamp,
+            high=float(high[i]),
+            low=float(low[i]),
+            close=float(close[i]),
+            atr=float(atr_values[i]),
+        )
+        outcome = sim.on_bar(bar, by_bar.get(timestamp), is_last=i == last)
+        if outcome.fill is not None:
+            trades.append(Trade.from_fill(outcome.fill))
+        if outcome.refusal is not None:
+            refusals.append((timestamp, outcome.refusal))
+        equity_points.append(sim.equity)
 
     return ok(
         BacktestResult(
@@ -243,49 +185,3 @@ def run_backtest(
             starting_equity=starting_equity,
         )
     )
-
-
-def _close(
-    open_trade: dict,
-    timestamp: pd.Timestamp,
-    exit_price: float,
-    outcome: str,
-    equity: float,
-    costs: CostModel,
-    atr_values: pd.Series,
-    i: int,
-) -> tuple[float, Trade]:
-    units = open_trade["units"]
-    exit_atr = float(atr_values.iloc[i])
-    if not math.isfinite(exit_atr):
-        # Unreachable by construction: ATR is seeded once and stays finite, and
-        # entry already refused any bar where it was not. Raising rather than
-        # defaulting to zero keeps a future change to either of those facts from
-        # silently reintroducing free exits.
-        raise AssertionError(f"ATR is {exit_atr} at exit bar {i}; cannot cost the exit")
-    slip = costs.slippage(exit_atr)
-    # Exit also fills against you.
-    fill = exit_price - slip if open_trade["side"] is Side.LONG else exit_price + slip
-
-    if open_trade["side"] is Side.LONG:
-        gross = (fill - open_trade["entry"]) * units
-    else:
-        gross = (open_trade["entry"] - fill) * units
-
-    total_costs = open_trade["entry_commission"] + costs.commission(fill * units)
-    trade = Trade(
-        entry_index=open_trade["entry_index"],
-        exit_index=timestamp,
-        side=open_trade["side"],
-        units=units,
-        entry=open_trade["entry"],
-        exit=fill,
-        stop=open_trade["stop"],
-        target=open_trade["target"],
-        outcome=outcome,
-        gross=gross,
-        costs=total_costs,
-        mae=open_trade["mae"],
-        mfe=open_trade["mfe"],
-    )
-    return equity + trade.net, trade
