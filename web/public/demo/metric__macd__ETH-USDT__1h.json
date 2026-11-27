@@ -1,0 +1,1 @@
+{"name": "macd", "stale": false, "points": [], "state": "ok", "series": {"macd": [{"time": 1795780800, "value": 9.234888667735504}], "signal": [{"time": 1795780800, "value": 9.732174503215896}], "hist": [{"time": 1795780800, "value": -0.4972858354803922}]}}
