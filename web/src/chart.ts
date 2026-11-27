@@ -571,6 +571,60 @@ export async function boot(
     state.markers.setMarkers(view.layers.trades ? markers : []);
   }
 
+  /** Everything the last fetch returned, so a layer can be drawn from memory.
+   *
+   * Switching a layer on used to call load(), which refetched twenty-seven
+   * requests — bars, four overlays, the registry and twenty-one metrics — to
+   * draw one thing the page already had. That is why the Layers buttons took a
+   * visible moment: the work was not the drawing, it was a round trip for data
+   * that had not changed.
+   */
+  type Fetched = {
+    venue: string;
+    overlays: { e20: MetricResponse; e50: MetricResponse; e200: MetricResponse; vwap: MetricResponse };
+    metrics: MetricResponse[];
+  };
+  let cached: Fetched | null = null;
+
+  /** Draw from whatever is in hand. No network. */
+  function paint(): void {
+    if (!cached) return;
+    const { overlays: o, metrics: responses } = cached;
+
+    for (const key of ["ema20", "ema50", "ema200", "vwap"]) {
+      state.overlays.get(key)?.remove();
+      state.overlays.delete(key);
+    }
+    if (view.layers.ema) {
+      overlay(state, "ema200", o.e200, token("--ink-dim") || "#555");
+      overlay(state, "ema50", o.e50, token("--accent") || "#D98A3D");
+      overlay(state, "ema20", o.e20, token("--info") || "#5B9BD5");
+    }
+    if (view.layers.vwap) {
+      overlay(state, "vwap", o.vwap, token("--annotate") || "#9B8BD9");
+    }
+
+    renderPanel(panel, responses, open);
+
+    const zoneResponse = responses.find((r) => r.name === "supply_demand_zones");
+    drawZones(
+      state,
+      view.layers.zones ? zoneResponse?.zones ?? [] : [],
+      bars.at(-1)?.close,
+      view.layers.labels,
+    );
+
+    const fibResponse = responses.find((r) => r.name === "fibonacci_levels");
+    drawFib(
+      state,
+      view.layers.fib ? fibResponse?.scalars ?? {} : {},
+      bars.at(-1)?.close,
+    );
+
+    drawVolume(state, bars, view.layers.volume);
+    state.markers.setMarkers(view.layers.trades ? markers : []);
+  }
+
   async function load(): Promise<void> {
     const [{ bars: fetched, venue }, e20, e50, e200, vwap] = await Promise.all([
       api.ohlcv(symbol, timeframe, limit),
@@ -585,38 +639,7 @@ export async function boot(
     // land, so a saved trendline appears with them rather than a frame later.
     drawings?.focus(symbol, timeframe);
     state.candles.setData(bars);
-    // Recomputed per symbol, so a BTC account's trades stop being drawn over
-    // ETH bars the moment the instrument changes.
     markers = tradeMarkers(allTrades, symbol);
-    state.markers.setMarkers(view.layers.trades ? markers : []);
-    // Reapplied on the next frame as well as now. setData replaces the series,
-    // and a viewport built for 20,320 four-hour bars points past the end of a
-    // 3,390-bar daily series: the chart renders blank with an empty time axis,
-    // which looks like missing data rather than a viewport off the end of it.
-    // Setting it once immediately after setData was not enough, because the
-    // time scale had not taken the new length yet.
-    drawVolume(state, bars, view.layers.volume);
-    // Reset the viewport only when the instrument or the timeframe changed.
-    //
-    // Resetting on every load threw away the zoom on operations that have
-    // nothing to do with the bars: switching a layer on triggers a reload, and
-    // the chart snapped back from wherever it had been panned to. That reads
-    // as the zoom changing by itself, because from the outside it did.
-    const instrument = `${symbol}|${timeframe}`;
-    if (instrument !== framedFor) {
-      framedFor = instrument;
-      showRecent(state, container, bars.length);
-      requestAnimationFrame(() => showRecent(state, container, bars.length));
-    }
-
-    if (view.layers.ema) {
-      overlay(state, "ema200", e200, token("--ink-dim") || "#555");
-      overlay(state, "ema50", e50, token("--accent") || "#D98A3D");
-      overlay(state, "ema20", e20, token("--info") || "#5B9BD5");
-    }
-    if (view.layers.vwap) {
-      overlay(state, "vwap", vwap, token("--annotate") || "#9B8BD9");
-    }
 
     const last = bars.at(-1);
     const first = bars[0];
@@ -635,44 +658,21 @@ export async function boot(
       // series to show its last value ships twenty thousand points per metric.
       metrics.map((spec) => api.metric(spec.name, symbol, timeframe, {}, limit, 1)),
     );
-    renderPanel(panel, responses, open);
 
-    const zoneResponse = responses.find((r) => r.name === "supply_demand_zones");
-    drawZones(
-      state,
-      view.layers.zones ? zoneResponse?.zones ?? [] : [],
-      bars.at(-1)?.close,
-      view.layers.labels,
-    );
+    cached = { venue, overlays: { e20, e50, e200, vwap }, metrics: responses };
+    paint();
 
-    const fibResponse = responses.find((r) => r.name === "fibonacci_levels");
-    drawFib(
-      state,
-      view.layers.fib ? fibResponse?.scalars ?? {} : {},
-      bars.at(-1)?.close,
-    );
-  }
-
-  /** Apply a layer change without refetching.
-   *
-   * Hiding a layer removes what is drawn and nothing else: the engine still
-   * computed it and the panel still reports it. A toggle that skipped the
-   * computation would make a hidden level and an absent one look identical,
-   * which is the same confusion the degradation contract exists to prevent. */
-  function applyLayers(): void {
-    state.markers.setMarkers(view.layers.trades ? markers : []);
-    if (!view.layers.zones) drawZones(state, []);
-    if (!view.layers.fib) drawFib(state, {});
-    if (!view.layers.volume) drawVolume(state, [], false);
-    if (!view.layers.ema) {
-      for (const key of ["ema20", "ema50", "ema200"]) {
-        state.overlays.get(key)?.remove();
-        state.overlays.delete(key);
-      }
-    }
-    if (!view.layers.vwap) {
-      state.overlays.get("vwap")?.remove();
-      state.overlays.delete("vwap");
+    // Reset the viewport only when the instrument or the timeframe changed.
+    //
+    // Resetting on every load threw away the zoom on operations that have
+    // nothing to do with the bars: switching a layer on triggers a reload, and
+    // the chart snapped back from wherever it had been panned to. That reads
+    // as the zoom changing by itself, because from the outside it did.
+    const instrument = `${symbol}|${timeframe}`;
+    if (instrument !== framedFor) {
+      framedFor = instrument;
+      showRecent(state, container, bars.length);
+      requestAnimationFrame(() => showRecent(state, container, bars.length));
     }
   }
 
@@ -683,17 +683,13 @@ export async function boot(
       // one OFF only removes what is already on screen, so it is immediate.
       // Treating both the same made hiding a layer cost a round trip to delete
       // something the page already had.
-      const turnedOn = (
-        ["ema", "vwap", "zones", "fib", "volume"] as const
-      ).some((key) => next.layers[key] && !view.layers[key]);
-      // Labels change what is drawn on existing lines, so they need a redraw
-      // either way rather than only when switched on.
-      const labelsChanged = next.layers.labels !== view.layers.labels;
       view = next;
       updateRail(view);
       if (kindChanged) setKind(view.kind);
-      applyLayers();
-      if (turnedOn || labelsChanged) await load();
+      // Every layer change is a redraw from data already in hand. Nothing here
+      // touches the network, which is the difference between a toggle that
+      // responds and one that waits on twenty-seven requests.
+      paint();
     });
   }
 
