@@ -17,6 +17,14 @@
 
 import type { Bar } from "./api";
 
+/** Volume is context, not the subject.
+ *
+ * At full strength the pills used the same green and red as the candles, so
+ * the lower pane competed with the price pane for attention while carrying a
+ * secondary reading. Held back, the shape of the volume profile still reads at
+ * a glance and the candles stay the loudest thing on screen. */
+const VOLUME_OPACITY = 0.4;
+
 type RenderContext = {
   timeScale: { indexToX(index: number): number; visibleRange(): { from: number; to: number } };
   priceScale: { priceToY(price: number): number };
@@ -61,6 +69,7 @@ export class VolumePills {
     const baseY = rc.priceScale.priceToY(0);
 
     ctx.save();
+    ctx.globalAlpha = VOLUME_OPACITY;
     for (let i = first; i <= last; i += 1) {
       const bar = this.bars[i];
       if (!bar) continue;

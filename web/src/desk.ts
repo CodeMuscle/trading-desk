@@ -55,16 +55,35 @@ export function accountRow(account: Account, active: boolean): HTMLElement {
   return row;
 }
 
+/** A trade as two lines rather than five columns.
+ *
+ * Five columns in a 324px panel left every field cramped and wrapped the
+ * timestamp onto a second line anyway, so the row cost two lines and read like
+ * one. Two deliberate lines buy a hierarchy instead: what happened on top with
+ * the R multiple that is the point of the row, and when and how much below it
+ * in a quieter weight.
+ *
+ * R leads because it is the unit the position was sized in, so it compares
+ * across trades and across accounts; the currency figure does not, since the
+ * same R is a different number of dollars at a different equity.
+ */
 export function tradeRow(trade: Trade): HTMLElement {
   const row = el("div", `trow ${toneFor(trade.net)}`);
-  const when = trade.exit_index.slice(0, 16).replace("T", " ");
-  row.append(
-    el("span", "t-when", when),
+
+  const top = el("div", "trow-top");
+  top.append(
     el("span", `t-side ${trade.side.toLowerCase()}`, trade.side),
-    el("span", "t-out", trade.outcome === "end_of_data" ? "open-end" : trade.outcome),
-    el("span", "t-r", `${signed(trade.r_multiple)}R`),
+    el("span", "t-out", trade.outcome === "end_of_data" ? "still open" : trade.outcome),
+    el("span", `t-r ${toneFor(trade.net)}`, `${signed(trade.r_multiple)}R`),
+  );
+
+  const bottom = el("div", "trow-bottom");
+  bottom.append(
+    el("span", "t-when", when(trade.exit_index)),
     el("span", "t-net", signed(trade.net, 0)),
   );
+
+  row.append(top, bottom);
   row.title =
     `entry ${trade.entry.toFixed(2)} → exit ${trade.exit.toFixed(2)}\n` +
     `stop ${trade.stop.toFixed(2)}  target ${trade.target.toFixed(2)}\n` +
@@ -75,10 +94,25 @@ export function tradeRow(trade: Trade): HTMLElement {
   return row;
 }
 
+/** "21 Nov 12:00". The year is dropped because every row in a journal shares
+ *  it, and an ISO timestamp wrapped onto two lines to say the same thing. */
+function when(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso.slice(0, 16).replace("T", " ");
+  const day = date.getUTCDate().toString().padStart(2, "0");
+  const month = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ][date.getUTCMonth()];
+  const hh = date.getUTCHours().toString().padStart(2, "0");
+  const mm = date.getUTCMinutes().toString().padStart(2, "0");
+  return `${day} ${month}  ${hh}:${mm}`;
+}
+
 export function refusalRow(refusal: Refusal): HTMLElement {
   const row = el("div", "rrow");
   row.append(
-    el("span", "r-when", refusal.bar_index.slice(0, 16).replace("T", " ")),
+    el("span", "r-when", when(refusal.bar_index)),
     el("span", "r-why", refusal.reason),
   );
   row.title = refusal.reason;
