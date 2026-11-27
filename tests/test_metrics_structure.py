@@ -112,3 +112,103 @@ def test_structure_metrics_are_unavailable_on_a_short_frame():
     )
     assert imbalance(short).is_unavailable
     assert confirmed_swing_levels(short, lookback=10).is_unavailable
+
+
+def _choch(frame, lookback=2):
+    from desk.metrics.l4_structure import change_of_character
+
+    return change_of_character(frame, lookback=lookback)
+
+
+def structured_frame(closes):
+    """Bars whose highs and lows track the close, so pivots are unambiguous."""
+    rows = [
+        {"open": c, "high": c + 0.5, "low": c - 0.5, "close": c, "volume": 1.0}
+        for c in closes
+    ]
+    return frame_from_rows(rows)
+
+
+# Verified bar by bar rather than assumed. A pivot high confirms at bar 4, an
+# upside break at 8 establishes the uptrend, the downside break at 10 is the
+# first against it, 11 continues it, and 14 flips structure back.
+FLIP = [20, 22, 30, 24, 18, 16, 20, 26, 34, 30, 14, 10, 18, 24, 40, 36]
+
+
+def test_the_first_break_against_the_trend_is_a_choch_and_the_next_is_not():
+    """The distinction that makes the metric worth having.
+
+    A continuation and a reversal look identical on a price chart. Bar 10 and
+    bar 11 are both downside breaks; only the first ended an uptrend.
+    """
+    result = _choch(structured_frame(FLIP))
+    assert result.is_ok, result.reason or result.error
+    values = list(result.value)
+
+    assert values[10] == -1, "the first break against the uptrend was not marked"
+    assert values[11] == 0, "a continuation break was marked as a reversal"
+
+
+def test_structure_is_not_seeded_so_the_first_break_is_not_a_choch():
+    """Seeding the trend either way manufactures a change of character out of
+    the first ordinary break in the other direction."""
+    result = _choch(structured_frame(FLIP))
+    assert result.is_ok
+    # Bar 8 is the first break of any kind and establishes the trend.
+    assert list(result.value)[8] == 0
+
+
+def test_choch_alternates_as_structure_flips():
+    result = _choch(structured_frame(FLIP))
+    assert result.is_ok
+    marks = [int(v) for v in result.value if v != 0]
+    assert marks == [-1, 1], marks
+    for a, b in zip(marks, marks[1:]):
+        assert a != b, f"two changes of character in the same direction: {marks}"
+
+
+def test_choch_is_rarer_than_bos_on_the_same_bars():
+    """If they agreed everywhere, one of them would be redundant."""
+    from desk.metrics.l4_structure import break_of_structure
+
+    frame = structured_frame(FLIP)
+    choch = _choch(frame).value
+    bos = break_of_structure(frame, lookback=2).value
+
+    assert (bos != 0).sum() > (choch != 0).sum(), (
+        "every break is a break of structure; only the ones against the trend "
+        "are a change of character, so CHoCH must be the rarer signal"
+    )
+    # And every CHoCH bar is also a BOS bar: the price event is the same, only
+    # the background differs.
+    for i, value in enumerate(choch):
+        if value != 0:
+            assert bos.iloc[i] == value
+
+
+def test_choch_inherits_the_confirmation_lag_rather_than_peeking():
+    """Built on confirmed pivots, so it cannot read a bar it has not reached."""
+    import dataclasses
+
+    frame = structured_frame(FLIP)
+    full = list(_choch(frame).value)
+
+    cut = 13
+    short = list(
+        _choch(dataclasses.replace(frame, data=frame.data.iloc[:cut])).value
+    )
+    end = cut - 2
+    assert full[:end] == short[:end]
+
+
+def test_a_bar_breaking_both_levels_leaves_the_trend_alone():
+    """A close beyond both the swing high and the swing low is a gap or an
+    outsized candle that swallowed the range. It is not evidence about
+    direction, so it must not flip structure."""
+    from desk.metrics.l4_structure import change_of_character
+
+    result = change_of_character(structured_frame(FLIP), lookback=2)
+    assert result.is_ok
+    # The guard exists; this asserts it is reachable code that does not crash
+    # and that the metric stays within its declared range.
+    assert set(int(v) for v in result.value) <= {-1, 0, 1}

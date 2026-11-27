@@ -21,6 +21,8 @@ import {
   SYMBOLS,
 } from "./api";
 import { renderDesk } from "./desk";
+import { DEFAULT_OPEN, GROUPS, PATTERNS, ungrouped } from "./groups";
+import { applyTheme, isDarkNow, mountThemeToggle, readTheme } from "./theme";
 import {
   DEFAULT_VIEW,
   renderRail,
@@ -39,13 +41,16 @@ export type DeskState = {
    *  one on top of it, which is how a chart ends up with forty lines on it. */
   zoneLines: PriceLine[];
   fibLines: PriceLine[];
+  /** Its own pane, not an overlay on price. Volume shares no units with price,
+   *  so putting them on one scale makes whichever is larger flatten the other. */
+  volume: SeriesApi | null;
 };
 
 /** Follows design/tokens.css, which is dark-first and switches only on an
  *  explicit data-theme. Reading the OS preference here instead would put a
  *  light chart on a dark page for anyone whose OS is set to light. */
 function isDark(): boolean {
-  return document.documentElement.dataset.theme !== "light";
+  return isDarkNow();
 }
 
 function token(name: string): string {
@@ -59,7 +64,7 @@ export function mount(container: HTMLElement, kind: SeriesKind = "candlestick"):
   const candles = chart.addSeries(kind);
   return {
     chart, candles, overlays: new Map(),
-    markers: candles.createMarkers(), zoneLines: [], fibLines: [],
+    markers: candles.createMarkers(), zoneLines: [], fibLines: [], volume: null,
   };
 }
 
@@ -376,6 +381,98 @@ export function showRecent(
   });
 }
 
+/** Volume as a histogram on its own pane, coloured by the bar's direction.
+ *
+ * TradingView shows one by default and it is the most visible thing a chart
+ * without it is missing. Direction comes from the bar's own open and close
+ * rather than from the previous close, so a bar that opened down and closed up
+ * reads as buying, which is what the candle above it shows.
+ */
+export function drawVolume(state: DeskState, bars: Bar[], show: boolean): void {
+  if (!show) {
+    state.volume?.remove();
+    state.volume = null;
+    return;
+  }
+  if (!state.volume) {
+    state.volume = state.chart.addSeries("histogram", { paneIndex: 1 });
+  }
+  const up = token("--pos-soft") || "rgba(47,191,132,0.4)";
+  const down = token("--neg-soft") || "rgba(232,82,79,0.4)";
+  state.volume.setData(
+    bars.map((bar) => ({
+      time: bar.time,
+      value: bar.volume,
+      color: bar.close >= bar.open ? up : down,
+    })),
+  );
+}
+
+/** The metrics panel, grouped and collapsible.
+ *
+ * Sections keep their open state across reloads, because a panel that springs
+ * back open on every timeframe change is a panel you close repeatedly rather
+ * than once.
+ */
+export function renderPanel(
+  panel: HTMLElement,
+  responses: MetricResponse[],
+  open: Record<string, boolean>,
+): void {
+  const byName = new Map(responses.map((r) => [r.name, r]));
+  const sections: HTMLElement[] = [];
+
+  const section = (key: string, title: string, names: string[]) => {
+    const rows = names
+      .map((name) => byName.get(name))
+      .filter((r): r is MetricResponse => r !== undefined);
+    if (rows.length === 0) return;
+
+    const wrap = document.createElement("section");
+    wrap.className = "mgroup";
+
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "mhead";
+    head.setAttribute("aria-expanded", String(open[key] ?? true));
+    // A CSS triangle rather than a glyph. JetBrains Mono has no ▾, so the
+    // character fell back to a dot and the header read as a bullet list.
+    const caret = document.createElement("span");
+    caret.className = open[key] ?? true ? "caret is-open" : "caret";
+    const label = document.createElement("span");
+    label.textContent = title;
+    const count = document.createElement("span");
+    count.className = "mcount";
+    count.textContent = String(rows.length);
+    head.append(caret, label, count);
+
+    const body = document.createElement("div");
+    body.className = "mbody";
+    if (!(open[key] ?? true)) body.hidden = true;
+    body.append(...rows.map(metricRow));
+
+    head.addEventListener("click", () => {
+      const next = !(open[key] ?? true);
+      open[key] = next;
+      body.hidden = !next;
+      caret.classList.toggle("is-open", next);
+      head.setAttribute("aria-expanded", String(next));
+    });
+
+    wrap.append(head, body);
+    sections.push(wrap);
+  };
+
+  for (const [key, title, names] of GROUPS) section(key, title, names);
+  section("patterns", "Candle patterns", PATTERNS);
+  // Anything the registry grew that groups.ts has not been told about. Shown
+  // rather than dropped: a metric silently missing from the panel is one
+  // nobody notices is missing.
+  section("other", "Ungrouped", ungrouped(responses.map((r) => r.name)));
+
+  panel.replaceChildren(...sections);
+}
+
 export async function boot(
   container: HTMLElement,
   panel: HTMLElement,
@@ -393,6 +490,7 @@ export async function boot(
   let markers: SeriesMarker[] = [];
   let allTrades: Trade[] = [];
   let bars: Bar[] = [];
+  const open: Record<string, boolean> = { ...DEFAULT_OPEN };
 
   async function refreshDesk(): Promise<void> {
     if (!deskRoot) return;
@@ -442,6 +540,7 @@ export async function boot(
     // which looks like missing data rather than a viewport off the end of it.
     // Setting it once immediately after setData was not enough, because the
     // time scale had not taken the new length yet.
+    drawVolume(state, bars, view.layers.volume);
     showRecent(state, container, bars.length);
     requestAnimationFrame(() => showRecent(state, container, bars.length));
 
@@ -471,7 +570,7 @@ export async function boot(
       // series to show its last value ships twenty thousand points per metric.
       metrics.map((spec) => api.metric(spec.name, symbol, timeframe, {}, limit, 1)),
     );
-    panel.replaceChildren(...responses.map(metricRow));
+    renderPanel(panel, responses, open);
 
     const zoneResponse = responses.find((r) => r.name === "supply_demand_zones");
     drawZones(
@@ -498,6 +597,7 @@ export async function boot(
     state.markers.setMarkers(view.layers.trades ? markers : []);
     if (!view.layers.zones) drawZones(state, []);
     if (!view.layers.fib) drawFib(state, {});
+    if (!view.layers.volume) drawVolume(state, [], false);
     if (!view.layers.ema) {
       for (const key of ["ema20", "ema50", "ema200"]) {
         state.overlays.get(key)?.remove();
@@ -517,7 +617,7 @@ export async function boot(
       // one OFF only removes what is already on screen, so it is immediate.
       // Treating both the same made hiding a layer cost a round trip to delete
       // something the page already had.
-      const turnedOn = (["ema", "vwap", "zones", "fib"] as const).some(
+      const turnedOn = (["ema", "vwap", "zones", "fib", "volume"] as const).some(
         (key) => next.layers[key] && !view.layers[key],
       );
       view = next;
@@ -532,6 +632,18 @@ export async function boot(
   // replaceChildren on every click destroys the button that was just pressed,
   // so focus falls to the body and a keyboard user restarts from the top after
   // every change.
+  const themeRoot = document.getElementById("theme");
+  if (themeRoot) {
+    applyTheme(readTheme());
+    mountThemeToggle(themeRoot, () => {
+      // The chart's own theme is set at construction, so it is re-applied
+      // rather than rebuilt. Overlay and level colours are read from tokens
+      // each time they are drawn, so a reload picks the new palette up.
+      state.chart.applyOptions({ theme: isDarkNow() ? darkTheme : lightTheme });
+      void load();
+    });
+  }
+
   const controls = document.getElementById("controls");
   if (controls) {
     const timeframes = ["1h", "4h", "1d"];

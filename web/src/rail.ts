@@ -29,7 +29,7 @@ export const SERIES_KINDS: [SeriesKind, string, string][] = [
   ["baseline", "Baseline", "Closes, coloured above and below a reference level."],
 ];
 
-export type LayerKey = "ema" | "vwap" | "zones" | "trades" | "fib";
+export type LayerKey = "ema" | "vwap" | "zones" | "trades" | "fib" | "volume";
 
 export const LAYERS: [LayerKey, string, string][] = [
   ["ema", "EMA", "20, 50 and 200 period exponential moving averages."],
@@ -37,6 +37,7 @@ export const LAYERS: [LayerKey, string, string][] = [
   ["zones", "Zones", "Supply and demand bands. Solid is fresh, dashed has been tested."],
   ["fib", "Fib", "Retracements between the last confirmed swing high and low."],
   ["trades", "Trades", "Entries and exits from the selected paper account."],
+  ["volume", "Volume", "Traded volume per bar, on its own pane below price."],
 ];
 
 export type ViewState = {
@@ -46,7 +47,9 @@ export type ViewState = {
 
 export const DEFAULT_VIEW: ViewState = {
   kind: "candlestick",
-  layers: { ema: true, vwap: true, zones: true, trades: true, fib: false },
+  layers: {
+    ema: true, vwap: true, zones: true, trades: true, fib: false, volume: true,
+  },
 };
 
 function button(

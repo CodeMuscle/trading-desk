@@ -117,6 +117,37 @@
       outline: var(--focus-ring-w) solid var(--focus-ring); outline-offset: -2px;
     }
 
+    .rightbar { display: flex; align-items: center; gap: var(--space-3); }
+
+    /* ---- collapsible metric groups ---- */
+    .mgroup { border-bottom: 1px solid var(--line-2); }
+    .mhead {
+      display: grid; grid-template-columns: 12px 1fr auto;
+      gap: var(--space-2); align-items: center; width: 100%;
+      font: inherit; font-family: var(--font-mono); font-size: var(--fs-micro);
+      letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3);
+      background: none; border: 0; cursor: pointer;
+      padding: var(--space-3) var(--space-3);
+      transition: color var(--dur-fast) var(--ease-out);
+    }
+    .mhead:hover { color: var(--ink-1); background: var(--surface-hover); }
+    .mhead:focus-visible {
+      outline: var(--focus-ring-w) solid var(--focus-ring); outline-offset: -2px;
+    }
+    .caret {
+      width: 0; height: 0; justify-self: center;
+      border-left: 4px solid transparent; border-right: 4px solid transparent;
+      border-top: 5px solid var(--ink-dim);
+      transform: rotate(-90deg);
+      transition: transform var(--dur-fast) var(--ease-out);
+    }
+    .caret.is-open { transform: rotate(0deg); }
+    .mcount {
+      color: var(--ink-dim); letter-spacing: 0;
+      font-variant-numeric: tabular-nums;
+    }
+    .mbody { padding-bottom: var(--space-2); }
+
     /* ---- paper desk panel ---- */
     .deskpanel { width: 324px; }
     .acctlist { display: flex; flex-direction: column; }
@@ -212,7 +243,11 @@
   <div class="shell">
     <div class="topbar">
       <span id="header">loading…</span>
-      <span id="controls" class="controls"></span>
+      <span class="rightbar">
+        <span id="controls" class="controls"></span>
+        <span class="csep"></span>
+        <span id="theme" class="controls"></span>
+      </span>
     </div>
     <div class="body">
       <nav class="rail" id="rail" aria-label="Chart layers"></nav>

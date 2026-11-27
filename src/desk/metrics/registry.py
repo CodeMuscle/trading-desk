@@ -18,6 +18,7 @@ from desk.metrics.l2_profile import value_area, volume_profile
 from desk.metrics.l4_zones import fibonacci_levels, supply_demand_zones
 from desk.metrics.l4_structure import (
     break_of_structure,
+    change_of_character,
     confirmed_swing_levels,
     imbalance,
     imbalance_bands,
@@ -76,6 +77,9 @@ REGISTRY: dict[str, MetricSpec] = {
     ),
     "confirmed_swing_levels": MetricSpec(
         confirmed_swing_levels, OHLCV, "dict_of_series", {"lookback": 10}, sparse=True
+    ),
+    "change_of_character": MetricSpec(
+        change_of_character, OHLCV, "series", {"lookback": 10}
     ),
     "break_of_structure": MetricSpec(
         break_of_structure, OHLCV, "series", {"lookback": 10}

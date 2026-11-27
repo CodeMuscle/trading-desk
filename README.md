@@ -8,7 +8,7 @@ Zero paid data subscriptions · one Python metrics engine as the single source o
 a validation harness that has rejected every strategy it has been given, including the
 author's
 
-[![tests](https://img.shields.io/badge/tests-334%20passing%20%7C%2012%20skipped-2FBF84?style=flat-square)](tests/)
+[![tests](https://img.shields.io/badge/tests-344%20passing%20%7C%2015%20skipped-2FBF84?style=flat-square)](tests/)
 [![python](https://img.shields.io/badge/python-3.13-5B9BD5?style=flat-square)](pyproject.toml)
 [![engine](https://img.shields.io/badge/engine-pandas%203.1%20%2F%20numpy%202.5-5B9BD5?style=flat-square)](pyproject.toml)
 [![strategies enabled](https://img.shields.io/badge/strategies%20enabled-0-E8524F?style=flat-square)](#the-scoreboard)
@@ -249,7 +249,7 @@ web/                         the chart desk: left rail, chart, metrics, paper pa
 
 ```bash
 uv sync
-uv run pytest                               # 334 passing, 12 skipped
+uv run pytest                               # 344 passing, 15 skipped
 uv run python -m desk.api.app               # binds 127.0.0.1:8787
 cd web && npm install && npm run dev
 ```

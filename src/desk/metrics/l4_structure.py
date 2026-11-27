@@ -154,3 +154,69 @@ def imbalance_bands(frame: OHLCVFrame) -> MetricResult:
     lower[bear] = d["high"][bear]
 
     return ok({"upper": upper, "lower": lower}, stale=_stale(frame))
+
+
+def change_of_character(frame: OHLCVFrame, lookback: int = 10) -> MetricResult:
+    """The first break against the prevailing structure.
+
+    A break of structure and a change of character are the same event read
+    against different backgrounds. In an uptrend, taking out the last swing
+    high continues what was already happening and is a BOS; taking out the last
+    swing low is the first evidence the uptrend has stopped working, and that is
+    the CHoCH. Downtrend mirrors it. The distinction is the whole value: a
+    continuation and a reversal look identical on a price chart and mean
+    opposite things.
+
+    The term is Wyckoff's, for the shift from markdown into accumulation, and
+    predates its borrowing by the smart-money literature. It is included here on
+    that reading rather than the ICT one.
+
+    Structure is tracked from confirmed pivots only, so this inherits the fixed
+    confirmation lag and carries no lookahead. Direction is:
+
+        +1  bullish CHoCH: a downtrend broke its last swing high
+        -1  bearish CHoCH: an uptrend broke its last swing low
+         0  no change of character at this bar
+
+    Only the *first* break against the trend is reported. Once structure has
+    flipped, subsequent breaks in the new direction are continuation and belong
+    to `break_of_structure`; marking every one of them a CHoCH would turn the
+    signal into a second, noisier copy of it.
+    """
+    levels = confirmed_swing_levels(frame, lookback)
+    if not levels.is_ok:
+        return levels
+
+    close = frame.data["close"].to_numpy(dtype="float64")
+    highs = levels.value["high"].to_numpy(dtype="float64")
+    lows = levels.value["low"].to_numpy(dtype="float64")
+
+    direction = np.zeros(len(close), dtype="int64")
+    # 0 until structure has declared itself. Seeding it to either trend would
+    # manufacture a CHoCH out of the first ordinary break in the other.
+    trend = 0
+
+    for i in range(len(close)):
+        high, low = highs[i], lows[i]
+        broke_up = not np.isnan(high) and close[i] > high
+        broke_down = not np.isnan(low) and close[i] < low
+
+        if broke_up and broke_down:
+            # A bar closing beyond both levels at once is a gap or an outsized
+            # candle that swallowed the range. It is not evidence about
+            # direction, so the trend is left as it was.
+            continue
+        if broke_up:
+            if trend == -1:
+                direction[i] = 1
+            trend = 1
+        elif broke_down:
+            if trend == 1:
+                direction[i] = -1
+            trend = -1
+
+    return ok(
+        pd.Series(direction, index=frame.data.index),
+        stale=_stale(frame),
+        lookback=lookback,
+    )

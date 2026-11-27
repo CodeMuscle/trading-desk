@@ -103,7 +103,7 @@ def test_every_registered_metric_is_covered_by_this_test():
         "confirmed_swing_levels", "break_of_structure", "imbalance",
         "imbalance_bands", "volume_profile", "value_area",
         "rsi", "macd", "true_range", "atr",
-        "supply_demand_zones", "fibonacci_levels",
+        "supply_demand_zones", "fibonacci_levels", "change_of_character",
     }
 
 
