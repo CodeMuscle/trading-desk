@@ -23,6 +23,7 @@ import {
 import { renderDesk } from "./desk";
 import { DEFAULT_OPEN, GROUPS, PATTERNS, ungrouped } from "./groups";
 import { applyTheme, isDarkNow, mountThemeToggle, readTheme } from "./theme";
+import { mountTools, type DrawingSurface } from "./tools";
 import {
   DEFAULT_VIEW,
   renderRail,
@@ -529,6 +530,9 @@ export async function boot(
     ]);
 
     bars = fetched as Bar[];
+    // Point the drawing store at this symbol and timeframe before the bars
+    // land, so a saved trendline appears with them rather than a frame later.
+    drawings?.focus(symbol, timeframe);
     state.candles.setData(bars);
     // Recomputed per symbol, so a BTC account's trades stop being drawn over
     // ETH bars the moment the instrument changes.
@@ -632,6 +636,15 @@ export async function boot(
   // replaceChildren on every click destroys the button that was just pressed,
   // so focus falls to the body and a keyboard user restarts from the top after
   // every change.
+  // Drawing tools. Mounted before the first load so the saved drawings for the
+  // opening symbol and timeframe are on screen with the first candles.
+  const toolsRoot = document.getElementById("tools");
+  let drawings: DrawingSurface | null = null;
+  if (toolsRoot) {
+    drawings = mountTools(toolsRoot, state.chart, () => selectedAccount ?? "default");
+    drawings.focus(symbol, timeframe);
+  }
+
   const themeRoot = document.getElementById("theme");
   if (themeRoot) {
     applyTheme(readTheme());

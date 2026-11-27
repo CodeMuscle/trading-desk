@@ -87,6 +87,35 @@
     }
     .csep { width: var(--space-3); }
 
+    /* ---- drawing tools ---- */
+    .tools {
+      width: 40px; flex: none; background: var(--surface-1);
+      border-right: 1px solid var(--line-2); overflow-y: auto;
+      display: flex; flex-direction: column; align-items: center;
+      gap: 2px; padding: var(--space-2) 0;
+    }
+    .tool-btn {
+      width: 30px; height: 30px; display: grid; place-items: center;
+      background: none; border: 0; border-radius: var(--radius-sm);
+      color: var(--ink-3); cursor: pointer; padding: 0;
+      transition: color var(--dur-fast) var(--ease-out),
+                  background var(--dur-fast) var(--ease-out);
+    }
+    .tool-btn svg { width: 17px; height: 17px; display: block; }
+    .tool-btn:hover { color: var(--ink-1); background: var(--surface-hover); }
+    .tool-btn.is-active { color: var(--accent); background: var(--accent-soft); }
+    .tool-btn.is-danger:hover { color: var(--neg); }
+    .tool-btn:focus-visible {
+      outline: var(--focus-ring-w) solid var(--focus-ring); outline-offset: -1px;
+    }
+    .tool-fallback {
+      font-family: var(--font-ui); font-size: 10px; letter-spacing: .02em;
+    }
+    .tool-gap {
+      width: 18px; height: 1px; background: var(--line-2);
+      margin: var(--space-1) 0;
+    }
+
     /* ---- left rail: what the chart draws ---- */
     .rail {
       width: var(--rail-w); flex: none; background: var(--surface-1);
@@ -251,6 +280,7 @@
       </span>
     </div>
     <div class="body">
+      <nav class="tools" id="tools" aria-label="Drawing tools"></nav>
       <nav class="rail" id="rail" aria-label="Chart layers"></nav>
       <div class="chartcell" id="chart"></div>
       <aside class="panel">
