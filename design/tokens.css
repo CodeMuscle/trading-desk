@@ -70,9 +70,23 @@
   /* ---- type: 2+1 pairing. Geist carries character in titles;
      Inter is the correct engineering choice at 10-13px, not slop;
      JetBrains Mono is tabular so price columns align. ---- */
-  --font-display:      "Geist", "Inter", system-ui, sans-serif;
-  --font-ui:           "Inter", system-ui, -apple-system, sans-serif;
-  --font-mono:         "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Named faces that were never loaded are a silent fallback, and this file
+     had three of them: no @font-face, no link, so Geist, Inter and JetBrains
+     Mono all resolved to whatever the OS offered. The practical effect was
+     worse than the theory, because every panel asked for --font-mono, so the
+     entire desk rendered in Menlo. A UI set in monospace reads as a terminal
+     dump rather than an instrument.
+
+     These stacks name only faces that are actually present. On macOS that is
+     SF Pro and SF Mono, which are good faces, load instantly, and need no
+     network. The rule now is narrow: monospace for digits that must align in a
+     column, the UI face for everything a person reads as language. */
+  --font-display:      ui-sans-serif, -apple-system, BlinkMacSystemFont,
+                       "Segoe UI", system-ui, sans-serif;
+  --font-ui:           ui-sans-serif, -apple-system, BlinkMacSystemFont,
+                       "Segoe UI", system-ui, sans-serif;
+  --font-mono:         ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+                       Consolas, monospace;
 
   /* Settled after trying both ends. 10px was too small to read without
      leaning in, 12px made a dense panel feel padded and pushed rows off
@@ -196,4 +210,12 @@ html {
 
 @media (prefers-reduced-motion: reduce) {
   * { transition-duration: 1ms !important; animation-duration: 1ms !important; }
+}
+
+/* Language in the UI face, digits in the mono face.
+   A number that shifts column as its value changes is harder to compare than
+   one that does not, which is the only thing monospace is actually for here. */
+.num, td.num, .price, .metric-value, .mv, .t-r, .t-net, .s-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }

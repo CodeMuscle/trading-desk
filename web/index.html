@@ -28,7 +28,7 @@
       border-left: 1px solid var(--line-2); overflow-y: auto;
     }
     .ptitle {
-      font-family: var(--font-mono); font-size: var(--fs-micro);
+      font-family: var(--font-ui); font-size: var(--fs-micro);
       letter-spacing: .14em; text-transform: uppercase; color: var(--ink-dim);
       padding: var(--space-4) var(--space-3) var(--space-2);
     }
@@ -43,7 +43,7 @@
     /* The label truncates; the value never does. A clipped name is still
        recognisable, a clipped number is a different number. */
     .mk {
-      color: var(--ink-3); min-width: 0;
+      font-family: var(--font-ui); color: var(--ink-3); min-width: 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .mv {
@@ -69,7 +69,7 @@
        control, not a consumer segmented picker. */
     .controls { display: flex; gap: var(--space-1); align-items: center; }
     .chip {
-      font: inherit; font-family: var(--font-mono); font-size: var(--fs-caption);
+      font: inherit; font-family: var(--font-ui); font-size: var(--fs-caption);
       color: var(--ink-3); background: var(--surface-2);
       border: 1px solid var(--line-2); border-radius: var(--radius-sm);
       padding: var(--space-1) var(--space-3); cursor: pointer;
@@ -96,12 +96,12 @@
     }
     .rail-group { display: flex; flex-direction: column; gap: 1px; }
     .rail-title {
-      font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em;
+      font-family: var(--font-ui); font-size: 10px; letter-spacing: .12em;
       text-transform: uppercase; color: var(--ink-dim);
       padding: 0 var(--space-2) var(--space-1); text-align: center;
     }
     .rail-btn {
-      font: inherit; font-family: var(--font-mono); font-size: var(--fs-micro);
+      font: inherit; font-family: var(--font-ui); font-size: var(--fs-micro);
       color: var(--ink-3); background: none; border: 0;
       border-left: 2px solid transparent;
       padding: var(--space-2) var(--space-1); cursor: pointer; text-align: center;
@@ -124,7 +124,7 @@
     .mhead {
       display: grid; grid-template-columns: 12px 1fr auto;
       gap: var(--space-2); align-items: center; width: 100%;
-      font: inherit; font-family: var(--font-mono); font-size: var(--fs-micro);
+      font: inherit; font-family: var(--font-ui); font-size: var(--fs-micro);
       letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3);
       background: none; border: 0; cursor: pointer;
       padding: var(--space-3) var(--space-3);
@@ -182,7 +182,7 @@
       background: var(--surface-1); padding: var(--space-2) var(--space-3);
     }
     .s-label {
-      font-family: var(--font-mono); font-size: var(--fs-micro);
+      font-family: var(--font-ui); font-size: var(--fs-micro);
       letter-spacing: .08em;
       text-transform: uppercase; color: var(--ink-dim);
     }
@@ -214,6 +214,7 @@
 
     .rrow { display: grid; grid-template-columns: 1fr; gap: 1px; }
     .r-why {
+      font-family: var(--font-ui);
       color: var(--caution); line-height: 1.35;
       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
       overflow: hidden;
@@ -225,7 +226,7 @@
     .flat { color: var(--ink-3); }
 
     .empty {
-      font-family: var(--font-mono); font-size: var(--fs-micro);
+      font-family: var(--font-ui); font-size: var(--fs-caption);
       color: var(--ink-dim); line-height: var(--lh-prose);
       padding: var(--space-2) var(--space-4) var(--space-4);
     }
