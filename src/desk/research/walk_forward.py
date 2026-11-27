@@ -75,8 +75,9 @@ class Fold:
 class WalkForwardResult:
     folds: tuple[Fold, ...]
     trials: int
-    """Grid size times folds that actually ran a selection. Every fold re-ran
-    the whole grid, and the multiple-testing tax is owed on all of it."""
+    """Grid size times folds that ran a selection, plus `prior_trials`. Every
+    fold re-ran the whole grid, and the multiple-testing tax is owed on all of
+    it, including the runs that led to this grid being the one worth running."""
     oos_sharpe: float
     """Sharpe of every out-of-sample trade, pooled across folds. The headline."""
     oos_net: float
@@ -100,6 +101,9 @@ class WalkForwardResult:
     axis that does not matter."""
     modal_params: dict[str, Any] | None
     mean_degradation: float
+    own_trials: int = 0
+    """This run's own count, excluding what was carried in. Reported separately
+    so that a narrowed grid cannot look like a cheaper experiment than it was."""
     trial_sharpe_variance: float = float("nan")
     """Spread of Sharpes across all trials in all folds. The deflated Sharpe is
     uninterpretable without it, because it is the scale the deflation divides by."""
@@ -245,6 +249,7 @@ def walk_forward(
     min_trades: int = 10,
     anchored: bool = False,
     select_by: str = "plateau",
+    prior_trials: int = 0,
 ) -> MetricResult:
     """Repeatedly select on `train_bars` and score on the next `test_bars`.
 
@@ -263,7 +268,16 @@ def walk_forward(
     `select_by` is "plateau" or "sharpe". Plateau is the default for the same
     reason it is the sweep's default, and keeping both available makes the
     difference between them measurable rather than asserted.
+
+    `prior_trials` carries the count from earlier runs whose results informed
+    this grid. Narrowing a grid after reading walk-forward output is a decision
+    taken with knowledge of the test, so the trials that produced that knowledge
+    are still owed: re-running a 9-point grid and reporting 63 trials, having
+    reached that grid by reading 342, understates the tax by a factor of five and
+    is the one way a harness like this can be defeated from the inside.
     """
+    if prior_trials < 0:
+        raise ValueError("prior_trials cannot be negative")
     if select_by not in {"plateau", "sharpe"}:
         raise ValueError(f"select_by must be 'plateau' or 'sharpe', got {select_by!r}")
     if train_bars < 1 or test_bars < 1:
@@ -361,7 +375,14 @@ def walk_forward(
         else np.array([], dtype="float64")
     )
     oos_sharpe = sharpe_ratio(pooled) if pooled.size > 1 else float("nan")
-    trials = len(points) * max(selections, 1)
+    own = len(points) * max(selections, 1)
+    trials = own + prior_trials
+    if prior_trials:
+        notes.append(
+            f"{own} trials in this run, carried on top of {prior_trials} prior; the "
+            "deflation uses the total because the grid was chosen with the earlier "
+            "results in hand"
+        )
 
     spread = float(np.var(trial_sharpes, ddof=1)) if len(trial_sharpes) > 1 else float("nan")
     try:
@@ -421,6 +442,7 @@ def walk_forward(
         WalkForwardResult(
             folds=tuple(folds),
             trials=trials,
+            own_trials=own,
             oos_sharpe=oos_sharpe,
             oos_net=float(sum(f.test_net for f in folds)),
             oos_trades=int(sum(f.test_trades for f in folds)),

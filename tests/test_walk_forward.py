@@ -431,3 +431,37 @@ def test_a_mostly_unscored_fold_table_says_so():
     )
     assert result.is_ok
     assert any("reached 1 out-of-sample" in n for n in result.value.notes)
+
+
+def test_prior_trials_are_carried_into_the_deflation():
+    """Narrowing a grid after reading the output does not reset the tax.
+
+    This is the one way a harness like this can be defeated from the inside:
+    read 342 trials of walk-forward output, drop the parameter that lost, re-run
+    a 9-point grid, and report 63 trials. The deflated Sharpe then improves
+    because the count shrank, not because the strategy did.
+    """
+    frame = ramp_frame(300)
+    space = {"step": [5, 7]}
+    kwargs = dict(
+        costs=ZERO_COSTS, train_bars=150, test_bars=50, min_trades=4,
+    )
+
+    fresh = walk_forward(frame, space, every_nth, **kwargs).value
+    carried = walk_forward(frame, space, every_nth, prior_trials=340, **kwargs).value
+
+    assert carried.own_trials == fresh.own_trials
+    assert carried.trials == fresh.trials + 340
+    assert any("prior" in n for n in carried.notes)
+
+    # Same returns, larger count, so the deflated Sharpe cannot improve.
+    if math.isfinite(fresh.deflated_sharpe) and math.isfinite(carried.deflated_sharpe):
+        assert carried.deflated_sharpe <= fresh.deflated_sharpe
+
+
+def test_negative_prior_trials_is_rejected():
+    with pytest.raises(ValueError, match="prior_trials"):
+        walk_forward(
+            ramp_frame(200), {"step": [5]}, every_nth,
+            costs=ZERO_COSTS, train_bars=100, test_bars=25, prior_trials=-1,
+        )
