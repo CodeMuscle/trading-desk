@@ -89,7 +89,9 @@ def cmd_advance(args: argparse.Namespace) -> int:
             return 3
 
         engine = PaperEngine(store, args.account, costs=CostModel())
-        result = engine.advance(frame, signal.value.intents)
+        result = engine.advance(
+            frame, signal.value.intents, backfill=args.backfill
+        )
         if not result.is_ok:
             print(f"error: {result.error}", file=sys.stderr)
             return 4
@@ -102,6 +104,12 @@ def cmd_advance(args: argparse.Namespace) -> int:
             f"forming {value.bars_forming}  equity {value.equity:,.2f}  "
             f"open {'yes' if value.position_open else 'no'}"
         )
+        if value.bars_seeded:
+            print(
+                f"  baseline set at the newest closed bar; {value.bars_seeded} bars "
+                "of history were NOT traded, so this journal holds forward results "
+                "only. Pass --backfill to replay history instead."
+            )
         for fill in value.fills:
             net = fill.gross - fill.costs
             print(
@@ -161,6 +169,12 @@ def build_parser() -> argparse.ArgumentParser:
     advance.add_argument("account")
     advance.add_argument("--symbol", default="BTC/USDT")
     advance.add_argument("--timeframe", default="4h")
+    advance.add_argument(
+        "--backfill", action="store_true",
+        help="on a new account, replay the fetched history instead of only "
+        "setting the forward baseline. Writes a backtest into the paper journal, "
+        "so the result is no longer selection-free.",
+    )
     advance.add_argument(
         "--use-candle", action="store_true",
         help="keep the candle-pattern gate. Walk-forward preferred it off on 4h "

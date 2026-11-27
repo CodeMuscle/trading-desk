@@ -8,7 +8,7 @@ Zero paid data subscriptions · one Python metrics engine as the single source o
 a validation harness that has rejected every strategy it has been given, including the
 author's
 
-[![tests](https://img.shields.io/badge/tests-289%20passing%20%7C%206%20skipped-2FBF84?style=flat-square)](tests/)
+[![tests](https://img.shields.io/badge/tests-307%20passing%20%7C%206%20skipped-2FBF84?style=flat-square)](tests/)
 [![python](https://img.shields.io/badge/python-3.13-5B9BD5?style=flat-square)](pyproject.toml)
 [![engine](https://img.shields.io/badge/engine-pandas%203.1%20%2F%20numpy%202.5-5B9BD5?style=flat-square)](pyproject.toml)
 [![strategies enabled](https://img.shields.io/badge/strategies%20enabled-0-E8524F?style=flat-square)](#the-scoreboard)
@@ -173,6 +173,9 @@ writing them down.
 | Cross-check false pass | compared 0 pairs, printed AGREE | the tool now refuses to report agreement below 50% comparable |
 | Tuple-only stability | one resolved axis read as none | conflated "nothing holds" with "one parameter is decided" |
 | Launderable trial count | a narrowed grid reported 63 of 405 trials | deflation would improve because the count shrank, not the strategy |
+| Forming-bar processing | a provisional low locked in a stop permanently | idempotency then skips the corrected bar, so a transient wrong answer becomes final |
+| First-run backfill | 17 paper trades at a 70.6% win rate | a replay of an already-selected strategy, written into the journal as forward evidence |
+| Lag on backfilled bars | a two-month backfill read as a two-month-late poller | a column that cannot tell "late" from "backfilled" reads as a permanently broken desk |
 
 ---
 
@@ -215,6 +218,7 @@ src/desk/
   paper/simulator.py  the one bar-stepping simulator
   paper/engine.py     the live driver; same arithmetic, different bar source
   paper/account.py    SQLite accounts, journal and refusal log
+  cli.py              on-demand operation; nothing runs in the background
   backtest/           a driver over the simulator, plus the cost model
   research/           sweeps and walk-forward, both with trial accounting
   validation/         deflated Sharpe, PBO, minimum backtest length
@@ -235,10 +239,36 @@ web/                         the chart shell
 
 ```bash
 uv sync
-uv run pytest                               # 289 passing, 6 skipped
+uv run pytest                               # 307 passing, 6 skipped
 uv run uvicorn desk.api.app:app --port 8787 # binds 127.0.0.1
 cd web && npm install && npm run dev
 ```
+
+Run the paper desk. On demand only, so cron and a manual invocation are the same
+code path:
+
+```bash
+uv run desk create swing --equity 100000
+uv run desk advance swing --symbol BTC/USDT --timeframe 4h
+uv run desk journal swing
+```
+
+The first advance sets a baseline and trades none of the fetched history. That is
+deliberate: a paper journal is worth having because forward returns carry no selection,
+so their trial count is one, and replaying four hundred bars writes a backtest into the
+journal and labels it paper. `--backfill` opts into replay when replay is what you want.
+
+Bar processing is idempotent and the bar still forming is held back, so running this more
+often than the timeframe is free and running it late loses nothing. A 4h chart is served
+correctly by:
+
+```cron
+*/15 * * * * cd ~/trading-desk && uv run desk advance swing >> ~/.trading-desk/log 2>&1
+```
+
+Chosen over a daemon because a daemon that dies quietly leaves a gap in the journal that
+reads as "no signals", and after the fact that is indistinguishable from a quiet market.
+A failed invocation exits non-zero to a scheduler that can be made to shout.
 
 Walk a strategy through the harness:
 

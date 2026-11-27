@@ -47,6 +47,15 @@ class AdvanceResult:
     """Bars at or before `last_bar`, already applied on an earlier call. A live
     poller re-fetches overlapping windows by design, so this is the normal case
     and not a warning."""
+    bars_seeded: int
+    """Bars skipped on a new account to set the forward baseline, trading none.
+
+    Non-zero only on an account's first advance. A journal that mixes replayed
+    history with forward results is no longer forward: the whole reason to paper
+    trade is that forward returns carry no selection, so their trial count is
+    one, and a backfill of the same strategy the sweeps already chose carries all
+    405 of those trials. Opt in with `backfill=True` when replay is what you
+    want."""
     bars_forming: int
     """Bars whose close time has not passed yet, held back for a later call.
 
@@ -91,6 +100,7 @@ class PaperEngine:
         now: datetime | None = None,
         closed_bars_only: bool = True,
         max_staleness: float | None = 2.0,
+        backfill: bool = False,
     ) -> MetricResult:
         """Apply every closed bar in `frame` newer than the account's last.
 
@@ -115,6 +125,16 @@ class PaperEngine:
         of the timeframe, because a poller that silently failed and returned a
         cached frame should not look like a quiet market. None disables the check
         for replay.
+
+        `backfill` controls what the first advance on a new account does with the
+        history in the frame. The default trades none of it and sets the baseline
+        at the newest closed bar, because the paper journal's value is that it
+        contains forward results only. A first run that replays four hundred bars
+        writes a backtest into the journal and labels it paper: a live run against
+        BTC/USDT 4h did exactly that and produced seventeen trades at a 70.6% win
+        rate, a number that looks like validation and is a replay of the strategy
+        the sweeps had already selected across 405 trials. Pass True when replay
+        is genuinely what is wanted.
         """
         record = self.store.load(self.account)
         if record is None:
@@ -165,18 +185,41 @@ class PaperEngine:
         skipped = 0
         processed = 0
         forming = 0
+        seeded = 0
         last_bar = record.last_bar
         bar_seconds = frame.timeframe_seconds()
+
+        def closed(timestamp: pd.Timestamp) -> bool:
+            if not closed_bars_only:
+                return True
+            return wall_clock >= timestamp.to_pydatetime() + timedelta(
+                seconds=bar_seconds
+            )
+
+        if last_bar is None and not backfill:
+            # New account: set the baseline at the newest closed bar and trade
+            # none of the history, so everything the journal ever holds is
+            # forward. Counted and reported rather than done silently.
+            closed_bars = [ts for ts in index if closed(ts)]
+            seeded = len(closed_bars)
+            forming = len(index) - seeded
+            last_bar = closed_bars[-1] if closed_bars else None
+            self.store.save(replace(record, last_bar=last_bar))
+            return ok(
+                AdvanceResult(
+                    bars_processed=0, bars_skipped=0, bars_seeded=seeded,
+                    bars_forming=forming, fills=(), refusals=(),
+                    equity=record.equity, position_open=record.position is not None,
+                )
+            )
 
         for i, timestamp in enumerate(index):
             if last_bar is not None and timestamp <= last_bar:
                 skipped += 1
                 continue
-            if closed_bars_only:
-                closes_at = timestamp.to_pydatetime() + timedelta(seconds=bar_seconds)
-                if wall_clock < closes_at:
-                    forming += 1
-                    continue
+            if not closed(timestamp):
+                forming += 1
+                continue
 
             bar = Bar(
                 timestamp=timestamp,
@@ -245,6 +288,7 @@ class PaperEngine:
             AdvanceResult(
                 bars_processed=processed,
                 bars_skipped=skipped,
+                bars_seeded=seeded,
                 bars_forming=forming,
                 fills=tuple(fills),
                 refusals=tuple(refusals),

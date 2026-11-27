@@ -80,7 +80,7 @@ def test_paper_reproduces_the_backtest_bar_for_bar(store):
 
     store.create("paper", venue="fixture", starting_equity=50_000.0)
     engine = PaperEngine(store, "paper", costs=costs)
-    advanced = engine.advance(frame, intents)
+    advanced = engine.advance(frame, intents, backfill=True)
     assert advanced.is_ok, advanced
     got = advanced.value
 
@@ -115,7 +115,9 @@ def test_advancing_one_bar_at_a_time_matches_advancing_all_at_once(store):
     costs = CostModel()
 
     store.create("bulk", venue="fixture", starting_equity=50_000.0)
-    bulk = PaperEngine(store, "bulk", costs=costs).advance(frame, intents).value
+    bulk = PaperEngine(store, "bulk", costs=costs).advance(
+        frame, intents, backfill=True
+    ).value
 
     store.create("drip", venue="fixture", starting_equity=50_000.0)
     drip = PaperEngine(store, "drip", costs=costs)
@@ -123,7 +125,9 @@ def test_advancing_one_bar_at_a_time_matches_advancing_all_at_once(store):
         sliced = frame.data.iloc[:cut]
         import dataclasses
 
-        drip.advance(dataclasses.replace(frame, data=sliced), intents)
+        drip.advance(
+            dataclasses.replace(frame, data=sliced), intents, backfill=True
+        )
 
     assert drip.state().equity == pytest.approx(bulk.equity, rel=0, abs=1e-9)
     assert len(store.journal("drip")) == len(store.journal("bulk"))
@@ -140,7 +144,7 @@ def test_a_restart_does_not_reset_the_daily_loss_baseline(store):
     frame = trending_frame(60)
     store.create("acct", venue="fixture", starting_equity=10_000.0)
     engine = PaperEngine(store, "acct", costs=CostModel())
-    engine.advance(frame, intents_every(frame, 4))
+    engine.advance(frame, intents_every(frame, 4), backfill=True)
 
     before = engine.state()
     assert before.current_day is not None
@@ -172,7 +176,9 @@ def test_an_open_position_survives_a_restart_with_its_excursions(store):
     )
 
     store.create("acct", venue="fixture", starting_equity=10_000.0)
-    PaperEngine(store, "acct", costs=CostModel()).advance(frame, [intent])
+    PaperEngine(store, "acct", costs=CostModel()).advance(
+        frame, [intent], backfill=True
+    )
 
     held = store.load("acct").position
     assert held is not None
@@ -198,11 +204,11 @@ def test_replaying_the_same_bars_changes_nothing(store):
     store.create("acct", venue="fixture", starting_equity=50_000.0)
     engine = PaperEngine(store, "acct", costs=CostModel())
 
-    first = engine.advance(frame, intents).value
+    first = engine.advance(frame, intents, backfill=True).value
     equity_after_first = engine.state().equity
     trades_after_first = len(store.journal("acct"))
 
-    second = engine.advance(frame, intents).value
+    second = engine.advance(frame, intents, backfill=True).value
     assert second.bars_processed == 0
     assert second.bars_skipped == len(frame.data)
     assert second.fills == ()
@@ -225,7 +231,9 @@ def test_lag_is_recorded_for_the_newest_bar_and_null_for_backfill(store):
 
     # A wall clock two hours past the last bar: the poller was late.
     late = frame.data.index[-1].to_pydatetime() + timedelta(hours=2)
-    engine.advance(frame, intents_every(frame, 5), now=late, max_staleness=None)
+    engine.advance(
+        frame, intents_every(frame, 5), now=late, max_staleness=None, backfill=True
+    )
 
     journal = store.journal("acct")
     assert len(journal) > 1
@@ -287,7 +295,7 @@ def test_accounts_do_not_bleed_into_each_other(store):
     store.create("nse", venue="nse", starting_equity=50_000.0)
 
     PaperEngine(store, "crypto", costs=CostModel()).advance(
-        frame, intents_every(frame, 5)
+        frame, intents_every(frame, 5), backfill=True
     )
 
     assert store.load("nse").equity == pytest.approx(50_000.0)
@@ -312,7 +320,7 @@ def test_a_refused_intent_is_logged_with_its_reason(store):
     # 0.01% daily limit is breached. The default intents here are profitable,
     # which is why a losing set has to be constructed rather than assumed.
     losing = intents_every(frame, 3, stop_off=0.5, target_off=60.0)
-    result = engine.advance(frame, losing).value
+    result = engine.advance(frame, losing, backfill=True).value
 
     assert result.refusals
     logged = store.refusal_log("acct")
@@ -341,7 +349,9 @@ def test_the_forming_bar_is_held_back(store):
 
     # Halfway through the final bar's interval: it has not closed.
     mid = _at(frame, 0.5)
-    result = engine.advance(frame, [], now=mid, max_staleness=None).value
+    result = engine.advance(
+        frame, [], now=mid, max_staleness=None, backfill=True
+    ).value
 
     assert result.bars_forming == 1
     assert result.bars_processed == len(frame.data) - 1
@@ -353,7 +363,7 @@ def test_a_held_back_bar_is_processed_once_it_closes(store):
     store.create("acct", venue="fixture", starting_equity=50_000.0)
     engine = PaperEngine(store, "acct", costs=CostModel())
 
-    engine.advance(frame, [], now=_at(frame, 0.5), max_staleness=None)
+    engine.advance(frame, [], now=_at(frame, 0.5), max_staleness=None, backfill=True)
     second = engine.advance(frame, [], now=_at(frame, 1.1), max_staleness=None).value
 
     assert second.bars_forming == 0
@@ -388,7 +398,7 @@ def test_provisional_extremes_on_a_forming_bar_cannot_lock_in_a_wrong_exit(store
     provisional.iloc[-1, provisional.columns.get_loc("low")] = entry - 10.0
     mid = engine.advance(
         dataclasses.replace(frame, data=provisional),
-        [intent], now=_at(frame, 0.5), max_staleness=None,
+        [intent], now=_at(frame, 0.5), max_staleness=None, backfill=True,
     ).value
 
     assert mid.bars_forming == 1
@@ -417,7 +427,7 @@ def test_replay_mode_processes_every_bar(store):
 
     result = engine.advance(
         frame, [], now=_at(frame, 0.5),
-        closed_bars_only=False, max_staleness=None,
+        closed_bars_only=False, max_staleness=None, backfill=True,
     ).value
     assert result.bars_forming == 0
     assert result.bars_processed == len(frame.data)
@@ -469,6 +479,7 @@ def test_lag_is_recorded_when_a_fill_lands_on_the_newest_bar(store):
     engine.advance(
         frame, [opening],
         now=frame.data.index[-1].to_pydatetime() + step, max_staleness=None,
+        backfill=True,
     )
     assert store.load("acct").position is not None
     assert store.journal("acct").empty
@@ -492,3 +503,55 @@ def test_lag_is_recorded_when_a_fill_lands_on_the_newest_bar(store):
     assert lag is not None and lag == lag  # not NULL, not NaN
     # The bar's own duration plus the nine minutes the poller was late.
     assert lag == pytest.approx(step.total_seconds() + 9 * 60)
+
+
+def test_a_new_account_sets_a_baseline_instead_of_replaying_history(store):
+    """The default that protects what the journal is for.
+
+    A paper journal is worth having because forward returns carry no selection,
+    so their trial count is one. A first run that replays four hundred bars
+    writes a backtest into it and labels the result paper: a live run against
+    BTC/USDT 4h did exactly that and produced seventeen trades at a 70.6% win
+    rate, which looks like validation and is a replay of the strategy the sweeps
+    had already picked across 405 trials.
+    """
+    frame = trending_frame(100)
+    intents = intents_every(frame, 5)
+
+    store.create("acct", venue="fixture", starting_equity=50_000.0)
+    engine = PaperEngine(store, "acct", costs=CostModel())
+    first = engine.advance(frame, intents, max_staleness=None).value
+
+    assert first.bars_seeded == len(frame.data)
+    assert first.bars_processed == 0
+    assert first.fills == ()
+    assert store.journal("acct").empty
+    assert engine.state().equity == pytest.approx(50_000.0)
+    # The baseline is set, so the next genuinely new bar is traded.
+    assert engine.state().last_bar == frame.data.index[-1]
+
+
+def test_backfill_is_available_but_has_to_be_asked_for(store):
+    frame = trending_frame(100)
+    intents = intents_every(frame, 5)
+
+    store.create("acct", venue="fixture", starting_equity=50_000.0)
+    engine = PaperEngine(store, "acct", costs=CostModel())
+    result = engine.advance(
+        frame, intents, max_staleness=None, backfill=True
+    ).value
+
+    assert result.bars_seeded == 0
+    assert result.bars_processed == len(frame.data)
+    assert not store.journal("acct").empty
+
+
+def test_seeding_happens_only_on_the_first_advance(store):
+    frame = trending_frame(100)
+    store.create("acct", venue="fixture", starting_equity=50_000.0)
+    engine = PaperEngine(store, "acct", costs=CostModel())
+
+    engine.advance(frame, [], max_staleness=None)
+    second = engine.advance(frame, [], max_staleness=None).value
+    assert second.bars_seeded == 0
+    assert second.bars_skipped == len(frame.data)
