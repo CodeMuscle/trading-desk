@@ -88,7 +88,13 @@ class CryptoAdapter:
         # slightly ahead of the exchange's. The tail is trimmed to `limit`
         # afterwards, so over-fetching costs one page at worst and under-
         # fetching silently returns a shorter backtest than was asked for.
-        cursor = now_ms - (limit + PAGE_MARGIN) * step
+        # Clamped at the epoch. Asking for more bars than the venue has makes
+        # this arithmetic negative, and a negative `since` is not a very early
+        # timestamp to Binance, it is a rejected request: "Illegal characters
+        # found in parameter 'startTime'". Asking for 60,000 daily bars is nine
+        # times the history that exists, which is the ordinary way a caller says
+        # "everything you have".
+        cursor = max(0, now_ms - (limit + PAGE_MARGIN) * step)
 
         collected: list[list] = []
         for _ in range(MAX_PAGES):

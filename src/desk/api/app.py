@@ -8,10 +8,13 @@ never be reachable from the network.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
+import ccxt
 import numpy as np
+import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 
 from desk.adapters.crypto import CryptoAdapter
@@ -23,8 +26,25 @@ from desk.store.cache import FrameStore
 HOST = "127.0.0.1"
 PORT = 8787
 
+TOP_UP_BARS = 300
+"""How far behind the cache may be and still be topped up rather than refetched.
 
-def _points(series) -> list[dict[str, Any]]:
+Generous on purpose: 300 bars is two days on 1h and fifty days on 1d, so a desk
+left closed over a weekend still tops up. Beyond it a full refetch is both
+simpler and not much slower than many pages.
+"""
+
+
+def _points(series, tail: int | None = None) -> list[dict[str, Any]]:
+    """Series as points, optionally only the last `tail` of them.
+
+    The tail exists because the metrics panel renders one number per metric and
+    was being sent the whole series to do it. At full history that is twenty
+    thousand points per metric and four hundred thousand across the panel,
+    which took over a minute to serialise and left the panel blank while it
+    did. A caller that wants a line asks for the series; a caller that wants a
+    reading asks for the last point.
+    """
     out: list[dict[str, Any]] = []
     for ts, value in series.items():
         if isinstance(value, float) and math.isnan(value):
@@ -36,6 +56,12 @@ def _points(series) -> list[dict[str, Any]]:
         else:
             value = float(value)
         out.append({"time": int(ts.timestamp()), "value": value})
+    # Trimmed after the NaN filter, not before. A pivot series is mostly empty,
+    # so slicing the last bar first returns nothing at all and the panel shows
+    # a dash for a metric that has a perfectly good last reading twenty bars
+    # back. The tail counts points that exist.
+    if tail is not None and tail > 0:
+        return out[-tail:]
     return out
 
 
@@ -46,25 +72,88 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="Trading desk engine", version="0.1.0")
 
-    def load(symbol: str, timeframe: str, limit: int):
-        """Serve from cache, but only while the cache is current.
+    # How many bars each (symbol, timeframe) can actually supply, learned from
+    # the first fetch that came back short. In memory only: it is a fact about
+    # the venue's listing that costs one request to rediscover.
+    ceilings: dict[tuple[str, str], int] = {}
 
-        The staleness check is the point. Without it a frame written once is
-        returned for as long as it holds enough bars, so the chart serves prices
-        from whenever the cache happened to be filled and keeps doing so
-        indefinitely. That is exactly what was happening: a desk showing
-        two-day-old candles under a live-looking header, with the engine
-        correctly reporting stale on all eighteen metrics into a UI that drew it
-        as a slightly dimmer colour.
+    def load(symbol: str, timeframe: str, limit: int):
+        """Serve from cache, top up its tail when that is enough, else refetch.
+
+        The staleness check is the point of the first branch. Without it a frame
+        written once is returned for as long as it holds enough bars, so the
+        chart serves prices from whenever the cache happened to be filled and
+        keeps doing so indefinitely.
+
+        The top-up is the point of the second. Full history on 4h is twenty
+        thousand bars and twelve seconds to fetch, so refetching all of it every
+        time a bar closes spends twelve seconds to learn one bar: the page would
+        stall for a quarter of a minute six times a day and the venue would be
+        asked for 2017 again each time.
         """
-        frame = store.get(adapter.info().venue, symbol, timeframe)
-        if (
-            frame is None
-            or len(frame.data) < limit
-            or frame.is_stale(datetime.now(timezone.utc))
-        ):
+        venue = adapter.info().venue
+        frame = store.get(venue, symbol, timeframe)
+        now = datetime.now(timezone.utc)
+
+        # A request for more bars than the venue has must not count as a cache
+        # miss forever. "Everything you have" is spelled as a number far larger
+        # than the listing, so `len(cached) >= limit` is false on every request
+        # and each one refetches a decade: the panel took sixty-seven seconds to
+        # fill because twenty metrics each re-downloaded 2017. A short fetch is
+        # the venue saying it has no more, and that ceiling is remembered.
+        reachable = ceilings.get((symbol, timeframe))
+        want = min(limit, reachable) if reachable is not None else limit
+
+        if frame is not None and len(frame.data) >= want and not frame.is_stale(now):
+            return frame
+
+        if frame is not None and len(frame.data) >= want:
+            step = frame.timeframe_seconds()
+            behind = int(
+                (now - frame.data.index[-1].to_pydatetime()).total_seconds() // step
+            )
+            if 0 <= behind <= TOP_UP_BARS:
+                try:
+                    recent = adapter.fetch_frame(symbol, timeframe, TOP_UP_BARS)
+                except Exception:  # noqa: BLE001 - fall through to a full refetch
+                    recent = None
+                if recent is not None:
+                    merged = pd.concat([frame.data, recent.data])
+                    # Keep the newly fetched copy of any overlapping bar: one
+                    # that was still forming when it was cached has since been
+                    # corrected, and the cached version is the stale one.
+                    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+                    topped = replace(frame, data=merged, as_of=recent.as_of)
+                    store.put(topped)
+                    return topped
+
+        try:
             frame = adapter.fetch_frame(symbol, timeframe, limit)
-            store.put(frame)
+        except ccxt.BadSymbol as exc:
+            # A symbol the venue does not list is the caller's mistake, not a
+            # broken engine. An uncaught ccxt error produces 500 with an empty
+            # body, which says only that something went wrong somewhere.
+            raise HTTPException(
+                status_code=404,
+                detail=f"{venue} does not list {symbol!r}: {exc}",
+            ) from exc
+        except ccxt.BadRequest as exc:
+            raise HTTPException(
+                status_code=400, detail=f"{venue} rejected the request: {exc}"
+            ) from exc
+        except (ccxt.NetworkError, ccxt.ExchangeError) as exc:
+            # The venue is upstream of this process, so its failure is a gateway
+            # failure and not ours. 502 says which, and tells a caller to retry
+            # rather than to file a bug.
+            raise HTTPException(
+                status_code=502,
+                detail=f"{venue} unreachable or failing: {type(exc).__name__}: {exc}",
+            ) from exc
+
+        if len(frame.data) < limit:
+            # Short of what was asked for, so this is everything that exists.
+            ceilings[(symbol, timeframe)] = len(frame.data)
+        store.put(frame)
         return frame
 
     @app.get("/health")
@@ -95,7 +184,7 @@ def create_app(
     def ohlcv(
         symbol: str = Query("BTC/USDT"),
         timeframe: str = Query("4h"),
-        limit: int = Query(300, ge=1, le=6000),
+        limit: int = Query(1500, ge=1, le=60000),
     ) -> dict[str, Any]:
         frame = load(symbol, timeframe, limit)
         data = frame.data.tail(limit)
@@ -121,11 +210,12 @@ def create_app(
         name: str,
         symbol: str = Query("BTC/USDT"),
         timeframe: str = Query("4h"),
-        limit: int = Query(300, ge=1, le=6000),
+        limit: int = Query(1500, ge=1, le=60000),
         length: int | None = None,
         fast: int | None = None,
         slow: int | None = None,
         lookback: int | None = None,
+        tail: int | None = Query(None, ge=1, le=60000),
     ) -> dict[str, Any]:
         spec = REGISTRY.get(name)
         if spec is None:
@@ -188,10 +278,10 @@ def create_app(
                     "fresh": result.meta.get("fresh"), "points": []}
         if spec.returns == "dict_of_series":
             return {"name": name, "state": "ok", "stale": result.stale,
-                    "series": {k: _points(v) for k, v in result.value.items()},
+                    "series": {k: _points(v, tail) for k, v in result.value.items()},
                     "points": []}
         return {"name": name, "state": "ok", "stale": result.stale,
-                "points": _points(result.value)}
+                "points": _points(result.value, tail)}
 
     # ---- paper desk, read only ----
     #

@@ -2,14 +2,25 @@
 // page and its data therefore share an origin and no CORS config is needed.
 const BASE = "/api";
 
-/** 1500 4h bars is roughly eight months.
+/** Everything the venue has.
 
-The old default of 300 was eight weeks, which is why the chart opened on seven
-weeks of history and offered no way to see further back. The engine pages past
-the exchange's 1000-bar cap, so the ceiling here is a UI choice rather than a
-venue limit. */
-export const DEFAULT_BARS = 1500;
-export const BAR_CHOICES = [500, 1500, 3000, 6000];
+The engine pages to the start of listing and clamps the window at the epoch, so
+this is a real request rather than a large number that happens to work: BTC/USDT
+returns 20,320 bars on 4h and 3,390 on 1d, both back to August 2017. The cache
+tops up its tail afterwards, so the full fetch is paid once rather than on every
+bar close. */
+export const FULL_HISTORY = 60000;
+export const DEFAULT_BARS = FULL_HISTORY;
+
+export const BAR_CHOICES: [string, number][] = [
+  ["1y", 2190],
+  ["3y", 6570],
+  ["all", FULL_HISTORY],
+];
+
+/** Validation found ETH and SOL stronger than BTC, and they were unreachable
+ *  while the symbol was a constant. */
+export const SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT"];
 
 export type Bar = {
   time: number;
@@ -127,7 +138,17 @@ export const api = {
     timeframe: string,
     extra: Record<string, number> = {},
     limit = DEFAULT_BARS,
-  ) => get<MetricResponse>(`/metric/${name}`, { symbol, timeframe, limit, ...extra }),
+    /** Points to return. The panel shows one reading per metric, so it asks
+     *  for one point; an overlay that draws a line omits this. */
+    tail?: number,
+  ) =>
+    get<MetricResponse>(`/metric/${name}`, {
+      symbol,
+      timeframe,
+      limit,
+      ...extra,
+      ...(tail ? { tail } : {}),
+    }),
   accounts: () => get<{ accounts: Account[] }>("/accounts"),
   journal: (name: string) => get<JournalResponse>(`/journal/${name}`),
   refusals: (name: string) =>

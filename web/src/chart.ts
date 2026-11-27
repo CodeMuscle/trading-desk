@@ -18,6 +18,7 @@ import {
   type Point,
   type Trade,
   type Zone,
+  SYMBOLS,
 } from "./api";
 import { renderDesk } from "./desk";
 
@@ -139,7 +140,12 @@ export function metricRow(response: MetricResponse): HTMLElement {
   value.className = "mv";
 
   if (response.state === "ok") {
-    value.textContent = describe(response);
+    const reading = describe(response);
+    value.textContent = reading;
+    // A multi-value reading stacks under its own label. Side by side, the
+    // value column takes the whole row and the label collapses to nothing, so
+    // fibonacci_levels and value_area rendered as unlabelled walls of numbers.
+    if (reading.length > 22) row.classList.add("is-wide");
     if (response.stale) {
       // A badge rather than a dimmer colour. Stale was previously signalled by
       // opacity alone, which is unreadable next to the ordinary low-contrast
@@ -263,7 +269,7 @@ export async function boot(
   panel: HTMLElement,
   header: HTMLElement,
 ): Promise<void> {
-  const symbol = "BTC/USDT";
+  let symbol = "BTC/USDT";
   const state = mount(container);
   const deskRoot = document.getElementById("desk");
   let selectedAccount: string | null = null;
@@ -311,7 +317,9 @@ export async function boot(
 
     const { metrics } = await api.registry();
     const responses = await Promise.all(
-      metrics.map((spec) => api.metric(spec.name, symbol, timeframe, {}, limit)),
+      // tail=1: the panel renders one reading per metric. Asking for the whole
+      // series to show its last value ships twenty thousand points per metric.
+      metrics.map((spec) => api.metric(spec.name, symbol, timeframe, {}, limit, 1)),
     );
     panel.replaceChildren(...responses.map(metricRow));
 
@@ -331,6 +339,16 @@ export async function boot(
 
     const render = () => {
       controls.replaceChildren();
+      for (const value of SYMBOLS) {
+        controls.append(
+          chip(value.replace("/USDT", ""), value === symbol, async () => {
+            symbol = value;
+            render();
+            await load(timeframe, limit);
+          }),
+        );
+      }
+      controls.append(el("span", "csep"));
       for (const value of timeframes) {
         controls.append(chip(value, value === timeframe, async () => {
           timeframe = value;
@@ -338,11 +356,9 @@ export async function boot(
           await load(timeframe, limit);
         }));
       }
-      const spacer = document.createElement("span");
-      spacer.className = "csep";
-      controls.append(spacer);
-      for (const value of BAR_CHOICES) {
-        controls.append(chip(`${value}`, value === limit, async () => {
+      controls.append(el("span", "csep"));
+      for (const [label, value] of BAR_CHOICES) {
+        controls.append(chip(label, value === limit, async () => {
           limit = value;
           render();
           await load(timeframe, limit);
@@ -354,6 +370,12 @@ export async function boot(
 
   await refreshDesk();
   await load("4h", DEFAULT_BARS);
+}
+
+function el(tag: string, className: string): HTMLElement {
+  const node = document.createElement(tag);
+  node.className = className;
+  return node;
 }
 
 function chip(label: string, active: boolean, onClick: () => void): HTMLElement {

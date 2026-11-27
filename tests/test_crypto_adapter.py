@@ -12,7 +12,16 @@ class FakeCcxt:
 
     def __init__(self, rows=None, repeat_last=False):
         if rows is None:
-            start = 1_767_225_600_000  # 2026-01-01T00:00:00Z in ms
+            # Anchored to the real clock, not to a fixed date. The adapter
+            # computes its window by counting bars back from now, so a fixture
+            # pinned to January drifts an hour further out of range every hour
+            # and eventually falls entirely outside the window it is meant to
+            # satisfy. This is the second fixture in this suite to have had
+            # that bug.
+            from datetime import datetime, timezone
+
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            start = now_ms - 60 * 3_600_000
             rows = [
                 [start + i * 3_600_000, 100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i, 10.0]
                 for i in range(60)
@@ -21,9 +30,12 @@ class FakeCcxt:
         self.repeat_last = repeat_last
         self.calls = []
 
-    def fetch_ohlcv(self, symbol, timeframe, limit=None):
+    def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None):
+        # `since` mirrors the real ccxt signature. The pagination path passes it
+        # whenever more bars are wanted than fit in one page, and a fake that
+        # omits it fails with a TypeError that looks like a bug in the adapter.
         self.calls.append((symbol, timeframe, limit))
-        rows = list(self.rows)
+        rows = [r for r in self.rows if since is None or r[0] >= since]
         if self.repeat_last and rows:
             rows.append(list(rows[-1]))
             return rows
@@ -163,3 +175,28 @@ def test_timeframe_ms_matches_the_frame_parser():
     assert timeframe_ms("1m") == 60_000
     assert timeframe_ms("4h") == 14_400_000
     assert timeframe_ms("1d") == 86_400_000
+
+
+def test_asking_for_more_history_than_exists_does_not_send_a_negative_since():
+    """Regression: a request for everything produced an illegal timestamp.
+
+    The window start is computed by counting bars back from now, so asking for
+    more bars than the venue has makes it negative. Binance does not read that
+    as a very early time; it rejects the request outright with "Illegal
+    characters found in parameter 'startTime'". Asking for 60,000 daily bars is
+    nine times the history that exists, which is the ordinary way a caller says
+    "everything you have".
+    """
+    seen: list[int | None] = []
+
+    class Recording(FakeCcxt):
+        def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None):
+            seen.append(since)
+            return super().fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
+
+    adapter = CryptoAdapter(client=Recording())
+    adapter.fetch_frame("BTC/USDT", "1d", 60_000)
+
+    assert seen, "no page was requested"
+    for since in seen:
+        assert since is None or since >= 0, f"negative since: {since}"

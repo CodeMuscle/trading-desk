@@ -1,3 +1,6 @@
+import tempfile
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -256,3 +259,165 @@ def test_refusals_are_their_own_endpoint(desk):
     body = client.get("/refusals/swing").json()
     assert body["account"] == "swing"
     assert isinstance(body["refusals"], list)
+
+
+def test_an_unlisted_symbol_is_a_404_naming_the_symbol_not_a_bare_500():
+    """A symbol the venue does not list is the caller's mistake.
+
+    An uncaught ccxt error produces 500 with an empty body, which says only
+    that something went wrong somewhere in the engine. The status and the
+    message should say which side the problem is on.
+    """
+    import ccxt
+
+    class Unlisting(FakeCcxt):
+        def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None):
+            raise ccxt.BadSymbol(f"binance does not have market symbol {symbol}")
+
+    client = TestClient(
+        create_app(FrameStore(root=Path(tempfile.mkdtemp())), CryptoAdapter(client=Unlisting()))
+    )
+    response = client.get("/ohlcv", params={"symbol": "NOPE/USDT", "timeframe": "4h"})
+    assert response.status_code == 404
+    assert "NOPE/USDT" in response.json()["detail"]
+
+
+def test_a_venue_outage_is_a_502_not_a_500():
+    """The venue is upstream of this process, so its failure is a gateway
+    failure. 502 tells a caller to retry rather than to file a bug."""
+    import ccxt
+
+    class Down(FakeCcxt):
+        def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None):
+            raise ccxt.NetworkError("connection reset")
+
+    client = TestClient(
+        create_app(FrameStore(root=Path(tempfile.mkdtemp())), CryptoAdapter(client=Down()))
+    )
+    response = client.get("/ohlcv", params={"symbol": "BTC/USDT", "timeframe": "4h"})
+    assert response.status_code == 502
+    assert "NetworkError" in response.json()["detail"]
+
+
+def test_a_slightly_stale_cache_is_topped_up_rather_than_refetched(tmp_path):
+    """Full history on 4h is twenty thousand bars and twelve seconds to fetch.
+
+    Refetching all of it when one bar closes spends twelve seconds to learn one
+    bar. The top-up asks for a page, not a decade, and the test asserts on the
+    size of the request rather than on wall-clock time.
+    """
+    import dataclasses
+    from datetime import datetime, timedelta, timezone
+
+    from desk.api.app import TOP_UP_BARS
+
+    fake = FakeCcxt()
+    adapter = CryptoAdapter(client=fake)
+    cached = adapter.fetch_frame("BTC/USDT", "1h", 60)
+
+    store = FrameStore(root=tmp_path / "frames")
+    store.put(
+        dataclasses.replace(
+            cached,
+            as_of=datetime.now(timezone.utc)
+            - timedelta(seconds=cached.timeframe_seconds() * 4),
+        )
+    )
+    fake.calls.clear()
+
+    client = TestClient(create_app(store, adapter))
+    response = client.get(
+        "/ohlcv", params={"symbol": "BTC/USDT", "timeframe": "1h", "limit": 50}
+    )
+    assert response.status_code == 200
+    assert fake.calls, "nothing was fetched, so the stale cache was served"
+    requested = [limit for _symbol, _tf, limit in fake.calls]
+    assert all(
+        limit is None or limit <= TOP_UP_BARS for limit in requested
+    ), f"a full refetch was issued: {requested}"
+
+
+def test_a_topped_up_bar_keeps_the_newly_fetched_version(tmp_path):
+    """A bar still forming when it was cached has since been corrected.
+
+    Keeping the cached copy of an overlapping timestamp pins the provisional
+    high and low of a bar that has since closed, which is the same defect the
+    paper engine holds its forming bar back to avoid.
+    """
+    import dataclasses
+    from datetime import datetime, timedelta, timezone
+
+    fake = FakeCcxt()
+    adapter = CryptoAdapter(client=fake)
+    cached = adapter.fetch_frame("BTC/USDT", "1h", 60)
+
+    provisional = cached.data.copy()
+    provisional.iloc[-1, provisional.columns.get_loc("high")] = 1.0
+    store = FrameStore(root=tmp_path / "frames")
+    store.put(
+        dataclasses.replace(
+            cached,
+            data=provisional,
+            as_of=datetime.now(timezone.utc)
+            - timedelta(seconds=cached.timeframe_seconds() * 4),
+        )
+    )
+
+    client = TestClient(create_app(store, adapter))
+    body = client.get(
+        "/ohlcv", params={"symbol": "BTC/USDT", "timeframe": "1h", "limit": 50}
+    ).json()
+    assert body["bars"][-1]["high"] != 1.0
+
+
+def test_asking_for_more_bars_than_exist_is_not_a_permanent_cache_miss(tmp_path):
+    """Regression: the metrics panel took sixty-seven seconds to fill.
+
+    "Everything you have" is spelled as a number far larger than the listing,
+    so `len(cached) >= limit` was false on every request and each one refetched
+    the whole history. Twenty metrics meant twenty full downloads per page load.
+    A fetch that comes back short is the venue saying it has no more, and that
+    ceiling is remembered.
+    """
+    fake = FakeCcxt()  # supplies 60 bars
+    adapter = CryptoAdapter(client=fake)
+    store = FrameStore(root=tmp_path / "frames")
+    client = TestClient(create_app(store, adapter))
+
+    params = {"symbol": "BTC/USDT", "timeframe": "1h", "limit": 60000}
+    first = client.get("/ohlcv", params=params)
+    assert first.status_code == 200
+    after_first = len(fake.calls)
+    assert after_first > 0
+
+    for _ in range(3):
+        assert client.get("/ohlcv", params=params).status_code == 200
+
+    assert len(fake.calls) == after_first, (
+        "the venue was asked again for history it had already said was complete"
+    )
+
+
+def test_the_tail_counts_points_that_exist_not_bars(client):
+    """Regression: sparse metrics showed a dash under tail=1.
+
+    A pivot series is mostly empty, so trimming to the last bar before the NaN
+    filter returns nothing at all, and the panel renders a dash for a metric
+    with a perfectly good reading twenty bars back.
+    """
+    full = client.get(
+        "/metric/swing_pivots", params={"symbol": "BTC/USDT", "timeframe": "1h"}
+    ).json()
+    if full["state"] != "ok":
+        pytest.skip(f"swing_pivots unavailable on the fixture: {full.get('reason')}")
+
+    tailed = client.get(
+        "/metric/swing_pivots",
+        params={"symbol": "BTC/USDT", "timeframe": "1h", "tail": 1},
+    ).json()
+
+    for key, points in full["series"].items():
+        if not points:
+            continue
+        assert tailed["series"][key], f"{key} lost its last reading to the tail"
+        assert tailed["series"][key][-1] == points[-1]

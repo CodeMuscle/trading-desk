@@ -74,18 +74,26 @@
   --font-ui:           "Inter", system-ui, -apple-system, sans-serif;
   --font-mono:         "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  --fs-micro:          10px;   /* axis labels, legend keys */
-  --fs-caption:        11px;   /* column headers, metric labels */
-  --fs-dense:          12px;   /* table rows, tool rail */
-  --fs-body:           13px;   /* base */
-  --fs-body-lg:        14px;
-  --fs-title:          16px;
-  --fs-title-lg:       18px;
-  --fs-display:        22px;   /* the live price, account name */
+  /* Raised one step across the board. The original scale bottomed out at 10px,
+     which is legible on a 14-inch laptop at arm's length and not at a desk; a
+     number nobody reads without leaning in is a number that gets skipped, and
+     this UI is almost entirely numbers. 12px is the floor now, and it is used
+     for labels rather than for values. */
+  --fs-micro:          12px;   /* axis labels, legend keys */
+  --fs-caption:        13px;   /* column headers, metric labels */
+  --fs-dense:          14px;   /* table rows, tool rail */
+  --fs-body:           15px;   /* base */
+  --fs-body-lg:        16px;
+  --fs-title:          18px;
+  --fs-title-lg:       21px;
+  --fs-display:        26px;   /* the live price, account name */
 
-  --lh-tight:          1.2;
-  --lh-ui:             1.35;
-  --lh-prose:          1.55;
+  /* Looser than before. Dense data needs air between rows more than it needs
+     rows per screen: a panel that fits forty values nobody can scan is worse
+     than one that fits twenty-five anyone can. */
+  --lh-tight:          1.25;
+  --lh-ui:             1.45;
+  --lh-prose:          1.6;
 
   /* ---- radii: small. Rounded corners read consumer; terminals read precise. ---- */
   --radius-sm:         2px;    /* inputs, chips, cells */
@@ -106,12 +114,12 @@
   --space-12:          48px;
 
   /* ---- control heights: four rungs, so density is a setting not a rewrite ---- */
-  --control-xs:        24px;
-  --control-sm:        28px;
-  --control-md:        32px;
-  --control-lg:        40px;
-  --rail-w:            52px;   /* left tool rail */
-  --topbar-h:          42px;
+  --control-xs:        28px;
+  --control-sm:        32px;
+  --control-md:        36px;
+  --control-lg:        44px;
+  --rail-w:            56px;   /* left tool rail */
+  --topbar-h:          52px;
 
   /* ---- motion: fast. Anything over 200ms feels laggy in a terminal. ---- */
   --dur-fast:          120ms;
@@ -167,6 +175,15 @@
   --unavailable-fg:    rgba(16, 21, 31, 0.34);
 
   --chrome-bg:         rgba(251, 249, 244, 0.85);
+}
+
+/* Sharper rendering. Grayscale antialiasing keeps light-on-dark text from
+   thickening into a blur, which is the usual reason a dark UI reads as fuzzy;
+   optimizeLegibility turns on kerning and ligatures in the display face. */
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 /* numbers align or they lie */

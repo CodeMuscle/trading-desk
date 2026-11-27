@@ -8,7 +8,7 @@ Zero paid data subscriptions · one Python metrics engine as the single source o
 a validation harness that has rejected every strategy it has been given, including the
 author's
 
-[![tests](https://img.shields.io/badge/tests-327%20passing%20%7C%2012%20skipped-2FBF84?style=flat-square)](tests/)
+[![tests](https://img.shields.io/badge/tests-334%20passing%20%7C%2012%20skipped-2FBF84?style=flat-square)](tests/)
 [![python](https://img.shields.io/badge/python-3.13-5B9BD5?style=flat-square)](pyproject.toml)
 [![engine](https://img.shields.io/badge/engine-pandas%203.1%20%2F%20numpy%202.5-5B9BD5?style=flat-square)](pyproject.toml)
 [![strategies enabled](https://img.shields.io/badge/strategies%20enabled-0-E8524F?style=flat-square)](#the-scoreboard)
@@ -181,6 +181,10 @@ writing them down.
 | `dict_of_series` rendered lengths | `macd:300 signal:300 hist:300` | three identical bar counts wearing the names of three different numbers |
 | Zone tested by its own departure | every zone tested, `fresh` always 0 | price moves continuously, so the bar leaving a shelf still touches it |
 | Unbounded zone departure window | a zone rescored by every future bar | same base scored differently each week; unusable in a backtest |
+| Over-asking defeated the cache | metrics panel took 67s to fill | `len(cached) >= limit` is false forever when limit exceeds the listing, so every metric refetched a decade |
+| Negative `since` on a full fetch | venue rejected the request outright | asking for more bars than exist counted backwards past the epoch |
+| Tail applied before the NaN filter | sparse metrics showed `–` | trimming to the last *bar* returns nothing on a series that is mostly empty |
+| Venue errors surfaced as bare 500s | `Internal Server Error`, no body | an unlisted symbol is the caller's mistake (404) and an outage is upstream (502) |
 
 ---
 
@@ -245,7 +249,7 @@ web/                         the chart shell
 
 ```bash
 uv sync
-uv run pytest                               # 327 passing, 12 skipped
+uv run pytest                               # 334 passing, 12 skipped
 uv run python -m desk.api.app               # binds 127.0.0.1:8787
 cd web && npm install && npm run dev
 ```
