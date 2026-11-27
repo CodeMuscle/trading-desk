@@ -1,5 +1,19 @@
 // Relative, because Vite proxies /api to the engine on 127.0.0.1:8787. The
 // page and its data therefore share an origin and no CORS config is needed.
+/** Demo mode: read frozen JSON instead of calling the engine.
+ *
+ * The engine binds loopback and always will, so a hosted page cannot reach it.
+ * Rather than pretend otherwise, the deployed build ships a snapshot and reads
+ * it from disk. Switched on at build time by VITE_DEMO rather than sniffed at
+ * runtime, so a local dev server can never silently serve stale frozen data
+ * while looking live.
+ *
+ * The snapshot carries no accounts, journal, refusals or risk limits. The
+ * paper desk therefore renders its empty state, which is the honest display of
+ * "this deployment has no paper desk" rather than a fabricated one.
+ */
+const DEMO = import.meta.env.VITE_DEMO === "1";
+
 const BASE = "/api";
 
 /** Everything the venue has.
@@ -10,13 +24,17 @@ returns 20,320 bars on 4h and 3,390 on 1d, both back to August 2017. The cache
 tops up its tail afterwards, so the full fetch is paid once rather than on every
 bar close. */
 export const FULL_HISTORY = 60000;
-export const DEFAULT_BARS = FULL_HISTORY;
+export const DEFAULT_BARS = DEMO ? 1500 : FULL_HISTORY;
 
-export const BAR_CHOICES: [string, number][] = [
-  ["1y", 2190],
-  ["3y", 6570],
-  ["all", FULL_HISTORY],
-];
+export const BAR_CHOICES: [string, number][] = DEMO
+  ? // The snapshot is a fixed 1500 bars per symbol and timeframe, so offering
+    // ranges the demo cannot serve would be three buttons that error.
+    [["1500 bars", 1500]]
+  : [
+      ["1y", 2190],
+      ["3y", 6570],
+      ["all", FULL_HISTORY],
+    ];
 
 /** Validation found ETH and SOL stronger than BTC, and they were unreachable
  *  while the symbol was a constant. */
@@ -71,6 +89,23 @@ export type MetricSpec = {
   returns: string;
   defaults: Record<string, number>;
 };
+
+
+
+function slug(symbol: string, timeframe: string): string {
+  return `${symbol.replace("/", "-")}__${timeframe}`;
+}
+
+async function demoGet<T>(file: string): Promise<T> {
+  const response = await fetch(`${import.meta.env.BASE_URL}demo/${file}.json`);
+  if (!response.ok) {
+    throw new Error(
+      `this demo has no snapshot for ${file}. The hosted build carries a fixed ` +
+        `set of symbols and timeframes; run the desk locally for the rest.`,
+    );
+  }
+  return (await response.json()) as T;
+}
 
 async function get<T>(path: string, params: Record<string, string | number> = {}): Promise<T> {
   const url = new URL(BASE + path, window.location.origin);
@@ -128,10 +163,25 @@ export type JournalResponse = {
 export type Refusal = { bar_index: string; symbol: string; reason: string };
 
 export const api = {
-  health: () => get<{ venue: string; capabilities: string[] }>("/health"),
-  registry: () => get<{ metrics: MetricSpec[] }>("/metrics"),
+  demo: DEMO,
+  health: () =>
+    DEMO
+      ? Promise.resolve({ venue: "binance", capabilities: ["ohlcv"] })
+      : get<{ venue: string; capabilities: string[] }>("/health"),
+  registry: () =>
+    DEMO
+      ? demoGet<{ metrics: MetricSpec[] }>("metrics")
+      : get<{ metrics: MetricSpec[] }>("/metrics"),
   ohlcv: (symbol: string, timeframe: string, limit = DEFAULT_BARS) =>
-    get<{ bars: Bar[]; venue: string; symbol: string }>("/ohlcv", { symbol, timeframe, limit }),
+    DEMO
+      ? demoGet<{ bars: Bar[]; venue: string; symbol: string }>(
+          `ohlcv__${slug(symbol, timeframe)}`,
+        )
+      : get<{ bars: Bar[]; venue: string; symbol: string }>("/ohlcv", {
+          symbol,
+          timeframe,
+          limit,
+        }),
   metric: (
     name: string,
     symbol: string,
@@ -142,14 +192,30 @@ export const api = {
      *  for one point; an overlay that draws a line omits this. */
     tail?: number,
   ) =>
-    get<MetricResponse>(`/metric/${name}`, {
+    DEMO
+      ? demoGet<MetricResponse>(
+          // The overlays are the only metrics the demo stores as full series;
+          // every other reading is frozen at its last point, exactly as the
+          // live panel requests it.
+          name === "ema" && extra.length
+            ? `ema${extra.length}__${slug(symbol, timeframe)}`
+            : name === "session_vwap" && !tail
+              ? `vwap__${slug(symbol, timeframe)}`
+              : `metric__${name}__${slug(symbol, timeframe)}`,
+        )
+      : get<MetricResponse>(`/metric/${name}`, {
       symbol,
       timeframe,
       limit,
       ...extra,
       ...(tail ? { tail } : {}),
     }),
-  accounts: () => get<{ accounts: Account[] }>("/accounts"),
+  // No paper desk in the demo. An empty list renders the panel's own empty
+  // state, which says so, rather than inventing an account.
+  accounts: () =>
+    DEMO
+      ? Promise.resolve({ accounts: [] as Account[] })
+      : get<{ accounts: Account[] }>("/accounts"),
   journal: (name: string) => get<JournalResponse>(`/journal/${name}`),
   refusals: (name: string) =>
     get<{ refusals: Refusal[] }>(`/refusals/${name}`),

@@ -702,7 +702,11 @@ export async function boot(
   const toolsRoot = document.getElementById("tools");
   let drawings: DrawingSurface | null = null;
   if (toolsRoot) {
-    drawings = mountTools(toolsRoot, state.chart, () => selectedAccount ?? "default");
+    drawings = await mountTools(
+      toolsRoot,
+      state.chart,
+      () => selectedAccount ?? "default",
+    );
     drawings.focus(symbol, timeframe);
   }
 

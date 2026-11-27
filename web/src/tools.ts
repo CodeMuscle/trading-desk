@@ -12,27 +12,20 @@
  * keeps two accounts from sharing a workspace.
  */
 
-import {
-  DrawingController,
-  BRUSH,
-  CALLOUT,
-  ELLIPSE,
-  FIB_RETRACEMENT,
-  HORIZONTAL_LINE,
-  LONG_POSITION,
-  MEASURE,
-  RAY,
-  RECTANGLE,
-  SHORT_POSITION,
-  TEXT,
-  TREND_LINE,
-  VERTICAL_LINE,
-  chromeIconSvg,
-  createInstrumentDrawings,
-  iconSvg,
-  registerBuiltinDrawingTools,
-  webStorageDrawingStore,
-} from "openalgo-charts/draw";
+/** The draw tier is imported at call time, not at module scope.
+ *
+ * Importing both "openalgo-charts" and "openalgo-charts/draw" statically puts
+ * two entry points of the same library in one bundle, and the draw tier
+ * depends on the core. Rollup hoisted them into an order where the core's
+ * bindings were read before they were initialised, so the production build
+ * died on "Cannot access 'xh' before initialization" while the dev server,
+ * which serves native ES modules and resolves the order itself, was fine. A
+ * dynamic import makes the dependency explicit and sequences it.
+ *
+ * It also keeps roughly a hundred kilobytes of drawing code out of the first
+ * paint, which the chart does not need to render bars.
+ */
+type DrawTier = typeof import("openalgo-charts/draw");
 
 type Tool = { id: string; name: string };
 
@@ -52,40 +45,47 @@ function glyph(make: () => string, label: string): string {
   }
 }
 
-/** The subset a swing desk reaches for, in the order TradingView groups them:
- *  lines, then shapes, then measurement, then annotation. The library
- *  registers many more; a rail listing all of them is a rail nobody scans. */
-const TOOLS: (Tool | "gap")[] = [
-  TREND_LINE,
-  RAY,
-  HORIZONTAL_LINE,
-  VERTICAL_LINE,
-  "gap",
-  RECTANGLE,
-  ELLIPSE,
-  BRUSH,
-  "gap",
-  FIB_RETRACEMENT,
-  MEASURE,
-  LONG_POSITION,
-  SHORT_POSITION,
-  "gap",
-  TEXT,
-  CALLOUT,
-];
-
 export type DrawingSurface = {
-  controller: DrawingController;
+  controller: InstanceType<DrawTier["DrawingController"]>;
   /** Point the store at a different symbol/timeframe, loading its drawings. */
   focus: (symbol: string, timeframe: string) => void;
   clear: () => void;
 };
 
-export function mountTools(
+export async function mountTools(
   root: HTMLElement,
   chart: unknown,
   account: () => string,
-): DrawingSurface {
+): Promise<DrawingSurface> {
+  const draw: DrawTier = await import("openalgo-charts/draw");
+  const {
+    DrawingController,
+    chromeIconSvg,
+    createInstrumentDrawings,
+    iconSvg,
+    registerBuiltinDrawingTools,
+    webStorageDrawingStore,
+  } = draw;
+
+  const TOOLS: (Tool | "gap")[] = [
+    draw.TREND_LINE,
+    draw.RAY,
+    draw.HORIZONTAL_LINE,
+    draw.VERTICAL_LINE,
+    "gap",
+    draw.RECTANGLE,
+    draw.ELLIPSE,
+    draw.BRUSH,
+    "gap",
+    draw.FIB_RETRACEMENT,
+    draw.MEASURE,
+    draw.LONG_POSITION,
+    draw.SHORT_POSITION,
+    "gap",
+    draw.TEXT,
+    draw.CALLOUT,
+  ];
+
   registerBuiltinDrawingTools();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
