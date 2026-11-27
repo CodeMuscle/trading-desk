@@ -15,6 +15,8 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Query
 
 from desk.adapters.crypto import CryptoAdapter
+from desk.cli import DEFAULT_DB
+from desk.paper.account import AccountRecord, AccountStore
 from desk.metrics.registry import REGISTRY
 from desk.store.cache import FrameStore
 
@@ -37,7 +39,11 @@ def _points(series) -> list[dict[str, Any]]:
     return out
 
 
-def create_app(store: FrameStore, adapter: CryptoAdapter) -> FastAPI:
+def create_app(
+    store: FrameStore,
+    adapter: CryptoAdapter,
+    accounts: AccountStore | None = None,
+) -> FastAPI:
     app = FastAPI(title="Trading desk engine", version="0.1.0")
 
     def load(symbol: str, timeframe: str, limit: int):
@@ -173,6 +179,147 @@ def create_app(store: FrameStore, adapter: CryptoAdapter) -> FastAPI:
         return {"name": name, "state": "ok", "stale": result.stale,
                 "points": _points(result.value)}
 
+    # ---- paper desk, read only ----
+    #
+    # Read only is structural here, not a convention. There is no POST, PUT or
+    # DELETE on this app at all, so no route exists that advances an account,
+    # sizes a position or changes a limit. Advancing happens through the CLI,
+    # where the actor is a person or their scheduler rather than anything that
+    # reached the page. The chatbot milestone will consume these same endpoints,
+    # and the tools it gets are the ones that exist.
+
+    def _require(name: str) -> AccountRecord:
+        if accounts is None:
+            raise HTTPException(status_code=503, detail="no account store configured")
+        record = accounts.load(name)
+        if record is None:
+            known = ", ".join(accounts.names()) or "none"
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown account {name!r}. Known accounts: {known}",
+            )
+        return record
+
+    @app.get("/accounts")
+    def account_list() -> dict[str, Any]:
+        if accounts is None:
+            return {"accounts": []}
+        out = []
+        for name in accounts.names():
+            record = accounts.load(name)
+            if record is None:
+                continue
+            out.append(
+                {
+                    "name": record.name,
+                    "venue": record.venue,
+                    "equity": record.equity,
+                    "starting_equity": record.starting_equity,
+                    "return_pct": (record.equity / record.starting_equity - 1.0) * 100.0,
+                    "position_open": record.position is not None,
+                    "last_bar": record.last_bar.isoformat()
+                    if record.last_bar is not None
+                    else None,
+                }
+            )
+        return {"accounts": out}
+
+    @app.get("/account/{name}")
+    def account_detail(name: str) -> dict[str, Any]:
+        record = _require(name)
+        position = None
+        if record.position is not None:
+            held = record.position
+            position = {
+                "entry_index": held.entry_index.isoformat(),
+                "side": held.side.name,
+                "units": held.units,
+                "entry": held.entry,
+                "stop": held.stop,
+                "target": held.target,
+                "mae": held.mae,
+                "mfe": held.mfe,
+            }
+        return {
+            "name": record.name,
+            "venue": record.venue,
+            "equity": record.equity,
+            "starting_equity": record.starting_equity,
+            "return_pct": (record.equity / record.starting_equity - 1.0) * 100.0,
+            "day_start": record.day_start,
+            "month_start": record.month_start,
+            "last_bar": record.last_bar.isoformat()
+            if record.last_bar is not None
+            else None,
+            "position": position,
+        }
+
+    @app.get("/journal/{name}")
+    def journal(name: str, limit: int = Query(200, ge=1, le=5000)) -> dict[str, Any]:
+        _require(name)
+        assert accounts is not None
+        frame = accounts.journal(name).tail(limit)
+        trades = []
+        for row in frame.to_dict("records"):
+            net = float(row["gross"]) - float(row["costs"])
+            risk = abs(float(row["entry"]) - float(row["stop"])) * float(row["units"])
+            trades.append(
+                {
+                    "entry_index": row["entry_index"],
+                    "exit_index": row["exit_index"],
+                    "symbol": row["symbol"],
+                    "side": row["side"],
+                    "outcome": row["outcome"],
+                    "entry": float(row["entry"]),
+                    "exit": float(row["exit"]),
+                    "stop": float(row["stop"]),
+                    "target": float(row["target"]),
+                    "net": net,
+                    # R is the unit a trader reasons in. Currency hides whether a
+                    # loss was the planned one or a stop that did not hold.
+                    "r_multiple": net / risk if risk else 0.0,
+                    "mae": float(row["mae"]),
+                    "mfe": float(row["mfe"]),
+                    "equity_after": float(row["equity_after"]),
+                    "lag_seconds": row["lag_seconds"],
+                }
+            )
+        wins = [t for t in trades if t["net"] > 0]
+        return {
+            "account": name,
+            "trades": trades,
+            "summary": {
+                "count": len(trades),
+                "net": sum(t["net"] for t in trades),
+                "win_rate": len(wins) / len(trades) if trades else None,
+                "expectancy_r": (
+                    sum(t["r_multiple"] for t in trades) / len(trades)
+                    if trades
+                    else None
+                ),
+            },
+        }
+
+    @app.get("/refusals/{name}")
+    def refusals(name: str, limit: int = Query(200, ge=1, le=5000)) -> dict[str, Any]:
+        """Why the desk did not trade.
+
+        Its own endpoint rather than a field on the journal, because a strategy
+        whose signals were mostly refused did not perform badly, it barely
+        traded, and a UI that shows only fills cannot tell those apart.
+        """
+        _require(name)
+        assert accounts is not None
+        frame = accounts.refusal_log(name).tail(limit)
+        return {
+            "account": name,
+            "refusals": [
+                {"bar_index": row["bar_index"], "symbol": row["symbol"],
+                 "reason": row["reason"]}
+                for row in frame.to_dict("records")
+            ],
+        }
+
     return app
 
 
@@ -181,7 +328,10 @@ def main() -> None:
 
     store = FrameStore(root="data/frames")
     adapter = CryptoAdapter()
-    uvicorn.run(create_app(store, adapter), host=HOST, port=PORT)
+    # Same database the CLI writes, so the page shows the account the scheduler
+    # is advancing rather than a second copy of it.
+    accounts = AccountStore(DEFAULT_DB)
+    uvicorn.run(create_app(store, adapter, accounts), host=HOST, port=PORT)
 
 
 if __name__ == "__main__":

@@ -155,3 +155,104 @@ def test_a_fresh_cached_frame_is_served_without_refetching(tmp_path):
     client = TestClient(create_app(store=store, adapter=adapter))
     client.get("/ohlcv", params={"symbol": "BTC/USDT", "timeframe": "1h", "limit": 50})
     assert fetches["n"] == 0
+
+
+@pytest.fixture()
+def desk(tmp_path):
+    """An app wired to a real account store with one advanced account."""
+    import dataclasses
+
+    from desk.backtest.costs import CostModel
+    from desk.paper.account import AccountStore
+    from desk.paper.engine import PaperEngine
+    from desk.strategy.base import Intent, Side
+
+    adapter = CryptoAdapter(client=FakeCcxt())
+    frame = adapter.fetch_frame("BTC/USDT", "1h", 60)
+    accounts = AccountStore(tmp_path / "desk.sqlite")
+    accounts.create("swing", venue="binance", starting_equity=50_000.0)
+
+    closes = frame.data["close"]
+    intents = [
+        Intent(
+            index=closes.index[i], side=Side.LONG, entry=float(closes.iloc[i]),
+            stop=float(closes.iloc[i]) * 0.99, target=float(closes.iloc[i]) * 1.01,
+        )
+        for i in range(20, len(closes), 6)
+    ]
+    PaperEngine(accounts, "swing", costs=CostModel()).advance(
+        frame, intents, max_staleness=None, backfill=True
+    )
+
+    store = FrameStore(root=tmp_path / "frames")
+    client = TestClient(create_app(store, adapter, accounts))
+    return client, accounts, dataclasses
+
+
+def test_the_api_exposes_no_write_route_at_all(desk):
+    """Read only is structural, not a convention.
+
+    No POST, PUT, PATCH or DELETE exists, so there is no route that advances an
+    account, sizes a position or changes a limit. Advancing happens through the
+    CLI, where the actor is a person or their scheduler rather than anything
+    that reached the page.
+    """
+    client, _accounts, _d = desk
+    app = client.app
+    writes = [
+        (route.path, sorted(route.methods - {"HEAD", "OPTIONS"}))
+        for route in app.routes
+        if getattr(route, "methods", None)
+        and (route.methods - {"GET", "HEAD", "OPTIONS"})
+    ]
+    assert writes == [], f"unexpected write routes: {writes}"
+
+
+def test_accounts_lists_equity_and_whether_a_position_is_open(desk):
+    client, _a, _d = desk
+    body = client.get("/accounts").json()
+    assert len(body["accounts"]) == 1
+    account = body["accounts"][0]
+    assert account["name"] == "swing"
+    assert account["starting_equity"] == 50_000.0
+    assert "return_pct" in account
+    assert isinstance(account["position_open"], bool)
+
+
+def test_an_unknown_account_404s_and_names_the_known_ones(desk):
+    client, _a, _d = desk
+    response = client.get("/account/ghost")
+    assert response.status_code == 404
+    assert "swing" in response.json()["detail"]
+
+
+def test_the_journal_reports_r_multiples_not_just_currency(desk):
+    """R is the unit a trader reasons in. Currency alone hides whether a loss
+    was the planned one or a stop that did not hold."""
+    client, _a, _d = desk
+    body = client.get("/journal/swing").json()
+    assert body["summary"]["count"] > 0
+    for trade in body["trades"]:
+        assert "r_multiple" in trade
+        assert trade["outcome"] in {"stop", "target", "end_of_data"}
+    assert body["summary"]["win_rate"] is not None
+    assert body["summary"]["expectancy_r"] is not None
+
+
+def test_an_empty_journal_summarises_as_none_rather_than_zero(desk, tmp_path):
+    """A win rate of 0.0 on no trades is a claim. None is the absence of one."""
+    client, accounts, _d = desk
+    accounts.create("fresh", venue="binance", starting_equity=1_000.0)
+    body = client.get("/journal/fresh").json()
+    assert body["summary"]["count"] == 0
+    assert body["summary"]["win_rate"] is None
+    assert body["summary"]["expectancy_r"] is None
+
+
+def test_refusals_are_their_own_endpoint(desk):
+    """A strategy whose signals were mostly refused did not perform badly, it
+    barely traded, and a UI showing only fills cannot tell those apart."""
+    client, _a, _d = desk
+    body = client.get("/refusals/swing").json()
+    assert body["account"] == "swing"
+    assert isinstance(body["refusals"], list)

@@ -555,3 +555,72 @@ def test_seeding_happens_only_on_the_first_advance(store):
     second = engine.advance(frame, [], max_staleness=None).value
     assert second.bars_seeded == 0
     assert second.bars_skipped == len(frame.data)
+
+
+def test_the_store_survives_use_from_several_threads(tmp_path):
+    """The read API serves these rows from a threadpool.
+
+    uvicorn runs sync endpoints off the event loop, so the connection is opened
+    on one thread and used on another. Without check_same_thread=False this
+    raises ProgrammingError on the first request, in production exactly as in
+    the test that found it.
+    """
+    import threading
+
+    store = AccountStore(tmp_path / "desk.sqlite")
+    try:
+        store.create("acct", venue="fixture", starting_equity=10_000.0)
+        errors: list[BaseException] = []
+
+        def read() -> None:
+            try:
+                for _ in range(20):
+                    assert store.load("acct") is not None
+                    store.names()
+                    store.journal("acct")
+            except BaseException as exc:  # noqa: BLE001 - recorded, then re-raised
+                errors.append(exc)
+
+        threads = [threading.Thread(target=read) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert errors == []
+    finally:
+        store.close()
+
+
+def test_concurrent_creates_cannot_exceed_the_account_ceiling(tmp_path):
+    """`create` reads the account list and then inserts.
+
+    Two threads interleaving between those two statements is a lost update, and
+    the ceiling is the visible symptom: six accounts in a store that allows
+    five. SQLite serialises individual statements but not that pair, which is
+    what the lock is for.
+    """
+    import threading
+
+    store = AccountStore(tmp_path / "desk.sqlite")
+    try:
+        made: list[str] = []
+        lock = threading.Lock()
+
+        def attempt(n: int) -> None:
+            try:
+                store.create(f"a{n}", venue="fixture", starting_equity=1_000.0)
+                with lock:
+                    made.append(f"a{n}")
+            except ValueError:
+                pass
+
+        threads = [threading.Thread(target=attempt, args=(n,)) for n in range(12)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len(made) <= MAX_ACCOUNTS
+        assert len(store.names()) <= MAX_ACCOUNTS
+    finally:
+        store.close()

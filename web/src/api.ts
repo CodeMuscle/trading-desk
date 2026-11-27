@@ -58,6 +58,49 @@ async function get<T>(path: string, params: Record<string, string | number> = {}
   return (await response.json()) as T;
 }
 
+export type Account = {
+  name: string;
+  venue: string;
+  equity: number;
+  starting_equity: number;
+  return_pct: number;
+  position_open: boolean;
+  last_bar: string | null;
+};
+
+export type Trade = {
+  entry_index: string;
+  exit_index: string;
+  symbol: string;
+  side: "LONG" | "SHORT";
+  outcome: "stop" | "target" | "end_of_data";
+  entry: number;
+  exit: number;
+  stop: number;
+  target: number;
+  net: number;
+  r_multiple: number;
+  mae: number;
+  mfe: number;
+  equity_after: number;
+  lag_seconds: number | null;
+};
+
+export type JournalResponse = {
+  account: string;
+  trades: Trade[];
+  summary: {
+    count: number;
+    net: number;
+    /** null rather than 0 on an empty journal: a win rate of zero on no trades
+     *  is a claim, and the absence of one is the honest value. */
+    win_rate: number | null;
+    expectancy_r: number | null;
+  };
+};
+
+export type Refusal = { bar_index: string; symbol: string; reason: string };
+
 export const api = {
   health: () => get<{ venue: string; capabilities: string[] }>("/health"),
   registry: () => get<{ metrics: MetricSpec[] }>("/metrics"),
@@ -70,4 +113,8 @@ export const api = {
     extra: Record<string, number> = {},
     limit = DEFAULT_BARS,
   ) => get<MetricResponse>(`/metric/${name}`, { symbol, timeframe, limit, ...extra }),
+  accounts: () => get<{ accounts: Account[] }>("/accounts"),
+  journal: (name: string) => get<JournalResponse>(`/journal/${name}`),
+  refusals: (name: string) =>
+    get<{ refusals: Refusal[] }>(`/refusals/${name}`),
 };

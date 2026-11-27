@@ -1,11 +1,23 @@
-import { createChart, darkTheme, lightTheme, type Chart, type SeriesApi } from "openalgo-charts";
+import {
+  createChart,
+  darkTheme,
+  lightTheme,
+  type Chart,
+  type SeriesApi,
+  type SeriesMarker,
+  type SeriesMarkers,
+} from "openalgo-charts";
 
-import { BAR_CHOICES, DEFAULT_BARS, api, type Bar, type MetricResponse, type Point } from "./api";
+import { BAR_CHOICES, DEFAULT_BARS, api, type Bar, type MetricResponse, type Point, type Trade } from "./api";
+import { renderDesk } from "./desk";
 
 export type DeskState = {
   chart: Chart;
   candles: SeriesApi;
   overlays: Map<string, SeriesApi>;
+  /** Created once and reused. setData clears the series, not this primitive,
+   *  so markers survive a timeframe change and are reapplied explicitly. */
+  markers: SeriesMarkers;
 };
 
 /** Follows design/tokens.css, which is dark-first and switches only on an
@@ -24,7 +36,7 @@ export function mount(container: HTMLElement): DeskState {
     theme: isDark() ? darkTheme : lightTheme,
   });
   const candles = chart.addSeries("candlestick");
-  return { chart, candles, overlays: new Map() };
+  return { chart, candles, overlays: new Map(), markers: candles.createMarkers() };
 }
 
 /** Numeric points only. A boolean or string metric is not a line. */
@@ -134,6 +146,43 @@ export function metricRow(response: MetricResponse): HTMLElement {
   return row;
 }
 
+/** Entry and exit markers for every trade in the journal.
+ *
+ * Coloured by the trade's net, never by its outcome. A target that filled
+ * through an adverse gap is still a loss and a stop is not always one, so
+ * colouring by outcome would draw the intent rather than the result.
+ *
+ * Exits carry the R multiple as their label because R is what the position was
+ * sized in; the currency figure is in the journal row's tooltip, where reading
+ * it is a deliberate act.
+ */
+export function tradeMarkers(trades: Trade[]): SeriesMarker[] {
+  const pos = token("--pos") || "#2FBF84";
+  const neg = token("--neg") || "#E8524F";
+  const out: SeriesMarker[] = [];
+
+  for (const trade of trades) {
+    const won = trade.net > 0;
+    const long = trade.side === "LONG";
+    out.push({
+      time: Math.floor(Date.parse(trade.entry_index) / 1000),
+      position: long ? "belowBar" : "aboveBar",
+      shape: long ? "arrowUp" : "arrowDown",
+      size: "tiny",
+      color: token("--ink-3") || "#888",
+    });
+    out.push({
+      time: Math.floor(Date.parse(trade.exit_index) / 1000),
+      position: long ? "aboveBar" : "belowBar",
+      shape: "circle",
+      size: "small",
+      color: won ? pos : neg,
+      text: `${trade.r_multiple >= 0 ? "+" : ""}${trade.r_multiple.toFixed(1)}R`,
+    });
+  }
+  return out;
+}
+
 export async function boot(
   container: HTMLElement,
   panel: HTMLElement,
@@ -141,6 +190,20 @@ export async function boot(
 ): Promise<void> {
   const symbol = "BTC/USDT";
   const state = mount(container);
+  const deskRoot = document.getElementById("desk");
+  let selectedAccount: string | null = null;
+  let markers: SeriesMarker[] = [];
+
+  async function refreshDesk(): Promise<void> {
+    if (!deskRoot) return;
+    const result = await renderDesk(deskRoot, selectedAccount, (name) => {
+      selectedAccount = name;
+      void refreshDesk();
+    });
+    selectedAccount = result.account;
+    markers = tradeMarkers(result.trades);
+    state.markers.setMarkers(markers);
+  }
 
   async function load(timeframe: string, limit: number): Promise<void> {
     const [{ bars, venue }, e20, e50, e200, vwap] = await Promise.all([
@@ -152,6 +215,9 @@ export async function boot(
     ]);
 
     state.candles.setData(bars as Bar[]);
+    // setData clears markers, so they are reapplied after every reload rather
+    // than only when the account changes.
+    state.markers.setMarkers(markers);
     overlay(state, "ema200", e200, token("--ink-dim") || "#555");
     overlay(state, "ema50", e50, token("--accent") || "#D98A3D");
     overlay(state, "ema20", e20, token("--info") || "#5B9BD5");
@@ -208,6 +274,7 @@ export async function boot(
     render();
   }
 
+  await refreshDesk();
   await load("4h", DEFAULT_BARS);
 }
 

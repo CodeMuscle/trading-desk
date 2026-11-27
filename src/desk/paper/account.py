@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -144,12 +145,26 @@ class AccountStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path, isolation_level=None)
+        # check_same_thread=False because the read API serves these rows from a
+        # threadpool: uvicorn runs sync endpoints off the event loop, so the
+        # connection is opened on one thread and used on another. The lock is
+        # what makes that safe. SQLite's own serialisation protects individual
+        # statements, but `create` reads the account list and then inserts, and
+        # two advances interleaving there would be a lost update.
+        self._lock = threading.RLock()
+        self.conn = sqlite3.connect(
+            self.path, isolation_level=None, check_same_thread=False
+        )
         self.conn.execute("PRAGMA foreign_keys = ON")
+        # WAL so a reading page does not block the writing CLI, which is the
+        # normal arrangement here: the scheduler advances while the chart polls.
+        self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
 
     def close(self) -> None:
-        self.conn.close()
+        with self._lock:
+            self.conn.close()
+
 
     def __enter__(self) -> AccountStore:
         return self
@@ -158,80 +173,90 @@ class AccountStore:
         self.close()
 
     def create(self, name: str, *, venue: str, starting_equity: float) -> AccountRecord:
-        if starting_equity <= 0:
-            raise ValueError("starting_equity must be positive")
-        existing = self.names()
-        if name in existing:
-            raise ValueError(f"account {name!r} already exists")
-        if len(existing) >= MAX_ACCOUNTS:
-            raise ValueError(
-                f"{MAX_ACCOUNTS} accounts is the ceiling; delete one rather than "
-                "raising it, because a list long enough to scroll is a list whose "
-                "risk you are not tracking"
+        with self._lock:
+            if starting_equity <= 0:
+                raise ValueError("starting_equity must be positive")
+            existing = self.names()
+            if name in existing:
+                raise ValueError(f"account {name!r} already exists")
+            if len(existing) >= MAX_ACCOUNTS:
+                raise ValueError(
+                    f"{MAX_ACCOUNTS} accounts is the ceiling; delete one rather than "
+                    "raising it, because a list long enough to scroll is a list whose "
+                    "risk you are not tracking"
+                )
+            self.conn.execute(
+                "INSERT INTO accounts (name, venue, starting_equity, equity, day_start,"
+                " month_start, current_day, current_month, last_bar, position, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)",
+                (
+                    name, venue, starting_equity, starting_equity, starting_equity,
+                    starting_equity, datetime.now(timezone.utc).isoformat(),
+                ),
             )
-        self.conn.execute(
-            "INSERT INTO accounts (name, venue, starting_equity, equity, day_start,"
-            " month_start, current_day, current_month, last_bar, position, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)",
-            (
-                name, venue, starting_equity, starting_equity, starting_equity,
-                starting_equity, datetime.now(timezone.utc).isoformat(),
-            ),
-        )
-        loaded = self.load(name)
-        assert loaded is not None
-        return loaded
+            loaded = self.load(name)
+            assert loaded is not None
+            return loaded
+
 
     def names(self) -> list[str]:
-        rows = self.conn.execute("SELECT name FROM accounts ORDER BY name").fetchall()
-        return [r[0] for r in rows]
+        with self._lock:
+            rows = self.conn.execute("SELECT name FROM accounts ORDER BY name").fetchall()
+            return [r[0] for r in rows]
+
 
     def load(self, name: str) -> AccountRecord | None:
-        row = self.conn.execute(
-            "SELECT name, venue, starting_equity, equity, day_start, month_start,"
-            " current_day, current_month, last_bar, position"
-            " FROM accounts WHERE name = ?",
-            (name,),
-        ).fetchone()
-        if row is None:
-            return None
-        month = None
-        if row[7]:
-            year, mon = row[7].split("-")
-            month = (int(year), int(mon))
-        return AccountRecord(
-            name=row[0], venue=row[1], starting_equity=row[2], equity=row[3],
-            day_start=row[4], month_start=row[5],
-            current_day=date.fromisoformat(row[6]) if row[6] else None,
-            current_month=month,
-            last_bar=pd.Timestamp(row[8]) if row[8] else None,
-            position=_load_position(row[9]),
-        )
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT name, venue, starting_equity, equity, day_start, month_start,"
+                " current_day, current_month, last_bar, position"
+                " FROM accounts WHERE name = ?",
+                (name,),
+            ).fetchone()
+            if row is None:
+                return None
+            month = None
+            if row[7]:
+                year, mon = row[7].split("-")
+                month = (int(year), int(mon))
+            return AccountRecord(
+                name=row[0], venue=row[1], starting_equity=row[2], equity=row[3],
+                day_start=row[4], month_start=row[5],
+                current_day=date.fromisoformat(row[6]) if row[6] else None,
+                current_month=month,
+                last_bar=pd.Timestamp(row[8]) if row[8] else None,
+                position=_load_position(row[9]),
+            )
+
 
     def save(self, record: AccountRecord) -> None:
-        month = (
-            f"{record.current_month[0]}-{record.current_month[1]:02d}"
-            if record.current_month
-            else None
-        )
-        updated = self.conn.execute(
-            "UPDATE accounts SET equity = ?, day_start = ?, month_start = ?,"
-            " current_day = ?, current_month = ?, last_bar = ?, position = ?"
-            " WHERE name = ?",
-            (
-                record.equity, record.day_start, record.month_start,
-                record.current_day.isoformat() if record.current_day else None,
-                month,
-                record.last_bar.isoformat() if record.last_bar is not None else None,
-                _dump_position(record.position),
-                record.name,
-            ),
-        ).rowcount
-        if not updated:
-            raise ValueError(f"account {record.name!r} does not exist; nothing saved")
+        with self._lock:
+            month = (
+                f"{record.current_month[0]}-{record.current_month[1]:02d}"
+                if record.current_month
+                else None
+            )
+            updated = self.conn.execute(
+                "UPDATE accounts SET equity = ?, day_start = ?, month_start = ?,"
+                " current_day = ?, current_month = ?, last_bar = ?, position = ?"
+                " WHERE name = ?",
+                (
+                    record.equity, record.day_start, record.month_start,
+                    record.current_day.isoformat() if record.current_day else None,
+                    month,
+                    record.last_bar.isoformat() if record.last_bar is not None else None,
+                    _dump_position(record.position),
+                    record.name,
+                ),
+            ).rowcount
+            if not updated:
+                raise ValueError(f"account {record.name!r} does not exist; nothing saved")
+
 
     def delete(self, name: str) -> None:
-        self.conn.execute("DELETE FROM accounts WHERE name = ?", (name,))
+        with self._lock:
+            self.conn.execute("DELETE FROM accounts WHERE name = ?", (name,))
+
 
     def record_fill(
         self,
@@ -243,36 +268,44 @@ class AccountStore:
         equity_after: float,
         lag_seconds: float | None,
     ) -> None:
-        self.conn.execute(
-            "INSERT INTO journal (account, symbol, timeframe, entry_index, exit_index,"
-            " side, units, entry, exit, stop, target, outcome, gross, costs, mae, mfe,"
-            " equity_after, lag_seconds, recorded_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                account, symbol, timeframe,
-                fill.entry_index.isoformat(), fill.exit_index.isoformat(),
-                fill.side.name, fill.units, fill.entry, fill.exit, fill.stop,
-                fill.target, fill.outcome, fill.gross, fill.costs, fill.mae, fill.mfe,
-                equity_after, lag_seconds, datetime.now(timezone.utc).isoformat(),
-            ),
-        )
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO journal (account, symbol, timeframe, entry_index, exit_index,"
+                " side, units, entry, exit, stop, target, outcome, gross, costs, mae, mfe,"
+                " equity_after, lag_seconds, recorded_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    account, symbol, timeframe,
+                    fill.entry_index.isoformat(), fill.exit_index.isoformat(),
+                    fill.side.name, fill.units, fill.entry, fill.exit, fill.stop,
+                    fill.target, fill.outcome, fill.gross, fill.costs, fill.mae, fill.mfe,
+                    equity_after, lag_seconds, datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
 
     def record_refusal(
         self, account: str, *, symbol: str, bar_index: pd.Timestamp, reason: str
     ) -> None:
-        self.conn.execute(
-            "INSERT INTO refusals (account, symbol, bar_index, reason) VALUES (?,?,?,?)",
-            (account, symbol, bar_index.isoformat(), reason),
-        )
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO refusals (account, symbol, bar_index, reason) VALUES (?,?,?,?)",
+                (account, symbol, bar_index.isoformat(), reason),
+            )
+
 
     def journal(self, account: str) -> pd.DataFrame:
-        return pd.read_sql_query(
-            "SELECT * FROM journal WHERE account = ? ORDER BY exit_index, id",
-            self.conn, params=(account,),
-        )
+        with self._lock:
+            return pd.read_sql_query(
+                "SELECT * FROM journal WHERE account = ? ORDER BY exit_index, id",
+                self.conn, params=(account,),
+            )
+
 
     def refusal_log(self, account: str) -> pd.DataFrame:
-        return pd.read_sql_query(
-            "SELECT * FROM refusals WHERE account = ? ORDER BY bar_index, id",
-            self.conn, params=(account,),
-        )
+        with self._lock:
+            return pd.read_sql_query(
+                "SELECT * FROM refusals WHERE account = ? ORDER BY bar_index, id",
+                self.conn, params=(account,),
+            )
+
