@@ -74,26 +74,27 @@
   --font-ui:           "Inter", system-ui, -apple-system, sans-serif;
   --font-mono:         "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  /* Raised one step across the board. The original scale bottomed out at 10px,
-     which is legible on a 14-inch laptop at arm's length and not at a desk; a
-     number nobody reads without leaning in is a number that gets skipped, and
-     this UI is almost entirely numbers. 12px is the floor now, and it is used
-     for labels rather than for values. */
-  --fs-micro:          12px;   /* axis labels, legend keys */
-  --fs-caption:        13px;   /* column headers, metric labels */
-  --fs-dense:          14px;   /* table rows, tool rail */
-  --fs-body:           15px;   /* base */
-  --fs-body-lg:        16px;
-  --fs-title:          18px;
-  --fs-title-lg:       21px;
-  --fs-display:        26px;   /* the live price, account name */
+  /* Settled after trying both ends. 10px was too small to read without
+     leaning in, 12px made a dense panel feel padded and pushed rows off
+     screen. 11px is the floor and it carries labels only; values sit at 12px
+     and above. The win from the first attempt that is kept is the line height
+     and the antialiasing, which did more for legibility here than the point
+     size did. */
+  --fs-micro:          11px;   /* axis labels, legend keys */
+  --fs-caption:        12px;   /* column headers, metric labels */
+  --fs-dense:          12px;   /* table rows, tool rail */
+  --fs-body:           13px;   /* base */
+  --fs-body-lg:        14px;
+  --fs-title:          16px;
+  --fs-title-lg:       18px;
+  --fs-display:        22px;   /* the live price, account name */
 
-  /* Looser than before. Dense data needs air between rows more than it needs
-     rows per screen: a panel that fits forty values nobody can scan is worse
-     than one that fits twenty-five anyone can. */
-  --lh-tight:          1.25;
-  --lh-ui:             1.45;
-  --lh-prose:          1.6;
+  /* Still looser than the original 1.35. Dense data needs air between rows
+     more than it needs rows per screen, and this is the part of the type pass
+     that survived shrinking the point size back down. */
+  --lh-tight:          1.2;
+  --lh-ui:             1.4;
+  --lh-prose:          1.55;
 
   /* ---- radii: small. Rounded corners read consumer; terminals read precise. ---- */
   --radius-sm:         2px;    /* inputs, chips, cells */
@@ -114,13 +115,13 @@
   --space-12:          48px;
 
   /* ---- control heights: four rungs, so density is a setting not a rewrite ---- */
-  --control-xs:        28px;
-  --control-sm:        32px;
-  --control-md:        36px;
-  --control-lg:        44px;
-  --rail-w:            78px;   /* left tool rail; wide enough for a word, because
+  --control-xs:        26px;
+  --control-sm:        30px;
+  --control-md:        34px;
+  --control-lg:        42px;
+  --rail-w:            70px;   /* left tool rail; wide enough for a word, because
                                   an icon-only rail needs a legend nobody reads */
-  --topbar-h:          52px;
+  --topbar-h:          46px;
 
   /* ---- motion: fast. Anything over 200ms feels laggy in a terminal. ---- */
   --dur-fast:          120ms;

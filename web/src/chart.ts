@@ -63,6 +63,21 @@ export function mount(container: HTMLElement, kind: SeriesKind = "candlestick"):
   };
 }
 
+/** Pixels per bar at the default zoom, and empty bars kept to the right.
+ *
+ * Measured off a TradingView BTC chart rather than guessed: its weekly view
+ * fitted roughly 230 bars across a 1350px plot, which is a shade under 6px a
+ * bar, and it leaves about ten bars of space after the last candle so the most
+ * recent price is not pressed against the axis. Fitting the whole series
+ * instead, which is what `fitContent` does, squashes twenty thousand bars into
+ * the window and shows a hairline.
+ */
+const BAR_SPACING_PX = 6;
+const RIGHT_OFFSET_BARS = 10;
+
+/** How far from spot a zone may sit and still be drawn, as a fraction. */
+const MAX_ZONE_DISTANCE = 0.2;
+
 /** Numeric points only. A boolean or string metric is not a line. */
 function lineData(response: MetricResponse): { time: number; value: number }[] {
   return response.points
@@ -190,9 +205,30 @@ export function metricRow(response: MetricResponse): HTMLElement {
  * a chart where no level stands out, which is the failure mode that makes this
  * kind of study useless in practice.
  */
-export function drawZones(state: DeskState, zones: Zone[], keep = 6): void {
+export function drawZones(
+  state: DeskState,
+  zones: Zone[],
+  lastPrice?: number,
+  keep = 6,
+): void {
   for (const line of state.zoneLines) state.chart.removePrimitive(line);
   state.zoneLines = [];
+
+  // A price line contributes to the price scale's autoscale, so a zone far
+  // from spot stretches the axis until the candles collapse into a band a few
+  // pixels tall. On BTC daily that produced a chart with no visible candles at
+  // all: the scale had been pulled up to a shelf 20% above the last close.
+  //
+  // Bounding by distance is also the right reading. A supply zone 40% above
+  // spot is not a level anything trades against this month, so drawing it
+  // costs the whole chart to show something unactionable.
+  if (lastPrice && lastPrice > 0) {
+    zones = zones.filter(
+      (z) =>
+        Math.abs((z.top + z.bottom) / 2 - lastPrice) / lastPrice <=
+        MAX_ZONE_DISTANCE,
+    );
+  }
 
   // Ranked fresh first, then by recency, and only then by strength. Sorting by
   // strength alone surfaces whichever ancient base happened to precede the
@@ -241,7 +277,11 @@ export function drawZones(state: DeskState, zones: Zone[], keep = 6): void {
  * them into the green and red reserved for price would make a drawn level look
  * like a reading.
  */
-export function drawFib(state: DeskState, levels: Record<string, number>): void {
+export function drawFib(
+  state: DeskState,
+  levels: Record<string, number>,
+  lastPrice?: number,
+): void {
   for (const line of state.fibLines) state.chart.removePrimitive(line);
   state.fibLines = [];
 
@@ -250,6 +290,14 @@ export function drawFib(state: DeskState, levels: Record<string, number>): void 
     // 0.000 and 1.000 are the anchors themselves, already visible as the swing
     // they were taken from. Redrawing them adds two lines and no information.
     if (ratio === "0.000" || ratio === "1.000") continue;
+    // Extensions sit outside the swing by construction, so the same autoscale
+    // hazard applies: 1.618 of a long leg can be far above anything traded.
+    if (
+      lastPrice &&
+      Math.abs(price - lastPrice) / lastPrice > MAX_ZONE_DISTANCE
+    ) {
+      continue;
+    }
     state.fibLines.push(
       state.chart.addPriceLine({
         price,
@@ -273,7 +321,12 @@ export function drawFib(state: DeskState, levels: Record<string, number>): void 
  * sized in; the currency figure is in the journal row's tooltip, where reading
  * it is a deliberate act.
  */
-export function tradeMarkers(trades: Trade[]): SeriesMarker[] {
+export function tradeMarkers(trades: Trade[], symbol?: string): SeriesMarker[] {
+  // Filtered by symbol, because a marker is anchored to a bar and a bar belongs
+  // to an instrument. Drawing the BTC account's trades over the ETH chart puts
+  // seventeen entries and exits on bars where nothing happened, and they look
+  // exactly like trades that did.
+  if (symbol) trades = trades.filter((t) => t.symbol === symbol);
   const pos = token("--pos") || "#2FBF84";
   const neg = token("--neg") || "#E8524F";
   const out: SeriesMarker[] = [];
@@ -300,6 +353,29 @@ export function tradeMarkers(trades: Trade[]): SeriesMarker[] {
   return out;
 }
 
+/** Right-anchor the most recent bars at a readable zoom.
+ *
+ * Applied after every data change, which is what makes a timeframe switch
+ * behave: the same pixel density is kept, so moving from 4h to 1d shows the
+ * same number of bars over a longer span rather than the same span at a
+ * different density. Without it the viewport keeps the previous series'
+ * logical range, and a 3390-bar daily series inherits a window built for 20,320
+ * four-hour bars.
+ */
+export function showRecent(
+  state: DeskState,
+  container: HTMLElement,
+  total: number,
+): void {
+  if (total === 0) return;
+  const width = container.clientWidth || 1000;
+  const visible = Math.max(40, Math.min(total, Math.floor(width / BAR_SPACING_PX)));
+  state.chart.setVisibleLogicalRange({
+    from: total - visible,
+    to: total + RIGHT_OFFSET_BARS,
+  });
+}
+
 export async function boot(
   container: HTMLElement,
   panel: HTMLElement,
@@ -315,6 +391,7 @@ export async function boot(
   const railRoot = document.getElementById("rail");
   let selectedAccount: string | null = null;
   let markers: SeriesMarker[] = [];
+  let allTrades: Trade[] = [];
   let bars: Bar[] = [];
 
   async function refreshDesk(): Promise<void> {
@@ -324,7 +401,8 @@ export async function boot(
       void refreshDesk();
     });
     selectedAccount = result.account;
-    markers = tradeMarkers(result.trades);
+    allTrades = result.trades;
+    markers = tradeMarkers(allTrades, symbol);
     state.markers.setMarkers(view.layers.trades ? markers : []);
   }
 
@@ -354,7 +432,18 @@ export async function boot(
 
     bars = fetched as Bar[];
     state.candles.setData(bars);
+    // Recomputed per symbol, so a BTC account's trades stop being drawn over
+    // ETH bars the moment the instrument changes.
+    markers = tradeMarkers(allTrades, symbol);
     state.markers.setMarkers(view.layers.trades ? markers : []);
+    // Reapplied on the next frame as well as now. setData replaces the series,
+    // and a viewport built for 20,320 four-hour bars points past the end of a
+    // 3,390-bar daily series: the chart renders blank with an empty time axis,
+    // which looks like missing data rather than a viewport off the end of it.
+    // Setting it once immediately after setData was not enough, because the
+    // time scale had not taken the new length yet.
+    showRecent(state, container, bars.length);
+    requestAnimationFrame(() => showRecent(state, container, bars.length));
 
     if (view.layers.ema) {
       overlay(state, "ema200", e200, token("--ink-dim") || "#555");
@@ -385,10 +474,18 @@ export async function boot(
     panel.replaceChildren(...responses.map(metricRow));
 
     const zoneResponse = responses.find((r) => r.name === "supply_demand_zones");
-    drawZones(state, view.layers.zones ? zoneResponse?.zones ?? [] : []);
+    drawZones(
+      state,
+      view.layers.zones ? zoneResponse?.zones ?? [] : [],
+      bars.at(-1)?.close,
+    );
 
     const fibResponse = responses.find((r) => r.name === "fibonacci_levels");
-    drawFib(state, view.layers.fib ? fibResponse?.scalars ?? {} : {});
+    drawFib(
+      state,
+      view.layers.fib ? fibResponse?.scalars ?? {} : {},
+      bars.at(-1)?.close,
+    );
   }
 
   /** Apply a layer change without refetching.
@@ -399,6 +496,8 @@ export async function boot(
    * which is the same confusion the degradation contract exists to prevent. */
   function applyLayers(): void {
     state.markers.setMarkers(view.layers.trades ? markers : []);
+    if (!view.layers.zones) drawZones(state, []);
+    if (!view.layers.fib) drawFib(state, {});
     if (!view.layers.ema) {
       for (const key of ["ema20", "ema50", "ema200"]) {
         state.overlays.get(key)?.remove();
@@ -412,55 +511,75 @@ export async function boot(
   }
 
   if (railRoot) {
-    const drawRail = () =>
-      renderRail(railRoot, view, async (next) => {
-        const kindChanged = next.kind !== view.kind;
-        const needsRedraw =
-          next.layers.ema !== view.layers.ema ||
-          next.layers.vwap !== view.layers.vwap ||
-          next.layers.zones !== view.layers.zones ||
-          next.layers.fib !== view.layers.fib;
-        view = next;
-        drawRail();
-        if (kindChanged) setKind(view.kind);
-        applyLayers();
-        if (needsRedraw) await load();
-      });
-    drawRail();
+    const updateRail = renderRail(railRoot, view, async (next) => {
+      const kindChanged = next.kind !== view.kind;
+      // Turning a layer ON needs its data drawn, which means a reload. Turning
+      // one OFF only removes what is already on screen, so it is immediate.
+      // Treating both the same made hiding a layer cost a round trip to delete
+      // something the page already had.
+      const turnedOn = (["ema", "vwap", "zones", "fib"] as const).some(
+        (key) => next.layers[key] && !view.layers[key],
+      );
+      view = next;
+      updateRail(view);
+      if (kindChanged) setKind(view.kind);
+      applyLayers();
+      if (turnedOn) await load();
+    });
   }
 
+  // Built once and updated in place, for the same reason as the rail: a
+  // replaceChildren on every click destroys the button that was just pressed,
+  // so focus falls to the body and a keyboard user restarts from the top after
+  // every change.
   const controls = document.getElementById("controls");
   if (controls) {
     const timeframes = ["1h", "4h", "1d"];
-    const render = () => {
-      controls.replaceChildren();
-      for (const value of SYMBOLS) {
-        controls.append(
-          chip(value.replace("/USDT", ""), value === symbol, async () => {
-            symbol = value;
-            render();
-            await load();
-          }),
-        );
+    const symbolButtons = new Map<string, HTMLElement>();
+    const tfButtons = new Map<string, HTMLElement>();
+    const rangeButtons = new Map<number, HTMLElement>();
+
+    const paint = () => {
+      for (const [value, node] of symbolButtons) {
+        node.classList.toggle("is-active", value === symbol);
       }
-      controls.append(el("span", "csep"));
-      for (const value of timeframes) {
-        controls.append(chip(value, value === timeframe, async () => {
-          timeframe = value;
-          render();
-          await load();
-        }));
+      for (const [value, node] of tfButtons) {
+        node.classList.toggle("is-active", value === timeframe);
       }
-      controls.append(el("span", "csep"));
-      for (const [label, value] of BAR_CHOICES) {
-        controls.append(chip(label, value === limit, async () => {
-          limit = value;
-          render();
-          await load();
-        }));
+      for (const [value, node] of rangeButtons) {
+        node.classList.toggle("is-active", value === limit);
       }
     };
-    render();
+
+    for (const value of SYMBOLS) {
+      const node = chip(value.replace("/USDT", ""), value === symbol, async () => {
+        symbol = value;
+        paint();
+        await load();
+      });
+      symbolButtons.set(value, node);
+      controls.append(node);
+    }
+    controls.append(el("span", "csep"));
+    for (const value of timeframes) {
+      const node = chip(value, value === timeframe, async () => {
+        timeframe = value;
+        paint();
+        await load();
+      });
+      tfButtons.set(value, node);
+      controls.append(node);
+    }
+    controls.append(el("span", "csep"));
+    for (const [label, value] of BAR_CHOICES) {
+      const node = chip(label, value === limit, async () => {
+        limit = value;
+        paint();
+        await load();
+      });
+      rangeButtons.set(value, node);
+      controls.append(node);
+    }
   }
 
   await refreshDesk();

@@ -75,30 +75,54 @@ function group(title: string): HTMLElement {
   return node;
 }
 
+/** Built once, then updated in place.
+ *
+ * Rebuilding the rail on every change replaced each button with a new node, so
+ * the one just clicked stopped existing: focus fell to the body and a keyboard
+ * user had to tab from the top again after every toggle. Rebuilding also throws
+ * away hover state mid-gesture. Only the pressed state actually changes, so
+ * only the pressed state is written.
+ */
 export function renderRail(
   root: HTMLElement,
   view: ViewState,
   onChange: (next: ViewState) => void,
-): void {
-  root.replaceChildren();
+): (next: ViewState) => void {
+  const kindButtons = new Map<SeriesKind, HTMLElement>();
+  const layerButtons = new Map<LayerKey, HTMLElement>();
+  let current = view;
 
   const kinds = group("Type");
   for (const [kind, label, title] of SERIES_KINDS) {
-    kinds.append(
-      button(label, title, view.kind === kind, () =>
-        onChange({ ...view, kind }),
-      ),
+    const node = button(label, title, view.kind === kind, () =>
+      onChange({ ...current, kind }),
     );
+    kindButtons.set(kind, node);
+    kinds.append(node);
   }
 
   const layers = group("Layers");
   for (const [key, label, title] of LAYERS) {
-    layers.append(
-      button(label, title, view.layers[key], () =>
-        onChange({ ...view, layers: { ...view.layers, [key]: !view.layers[key] } }),
-      ),
+    const node = button(label, title, view.layers[key], () =>
+      onChange({
+        ...current,
+        layers: { ...current.layers, [key]: !current.layers[key] },
+      }),
     );
+    layerButtons.set(key, node);
+    layers.append(node);
   }
 
-  root.append(kinds, layers);
+  root.replaceChildren(kinds, layers);
+
+  return (next: ViewState) => {
+    current = next;
+    for (const [kind, node] of kindButtons) setPressed(node, next.kind === kind);
+    for (const [key, node] of layerButtons) setPressed(node, next.layers[key]);
+  };
+}
+
+function setPressed(node: HTMLElement, active: boolean): void {
+  node.classList.toggle("is-active", active);
+  node.setAttribute("aria-pressed", String(active));
 }
