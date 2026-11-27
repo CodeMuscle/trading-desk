@@ -8,7 +8,7 @@ Zero paid data subscriptions · one Python metrics engine as the single source o
 a validation harness that has rejected every strategy it has been given, including the
 author's
 
-[![tests](https://img.shields.io/badge/tests-277%20passing%20%7C%206%20skipped-2FBF84?style=flat-square)](tests/)
+[![tests](https://img.shields.io/badge/tests-289%20passing%20%7C%206%20skipped-2FBF84?style=flat-square)](tests/)
 [![python](https://img.shields.io/badge/python-3.13-5B9BD5?style=flat-square)](pyproject.toml)
 [![engine](https://img.shields.io/badge/engine-pandas%203.1%20%2F%20numpy%202.5-5B9BD5?style=flat-square)](pyproject.toml)
 [![strategies enabled](https://img.shields.io/badge/strategies%20enabled-0-E8524F?style=flat-square)](#the-scoreboard)
@@ -172,6 +172,7 @@ writing them down.
 | `itertools.product()` empty | empty grid became 1 trial | a sweep reporting a trial count for work it never did |
 | Cross-check false pass | compared 0 pairs, printed AGREE | the tool now refuses to report agreement below 50% comparable |
 | Tuple-only stability | one resolved axis read as none | conflated "nothing holds" with "one parameter is decided" |
+| Launderable trial count | a narrowed grid reported 63 of 405 trials | deflation would improve because the count shrank, not the strategy |
 
 ---
 
@@ -189,6 +190,10 @@ writing them down.
 - **The API binds `127.0.0.1` only.** A later milestone POSTs indicator source from a
   browser editor into a local Python process; that path must never be network-reachable.
   No CORS wildcard.
+- **A limit a restart clears is not a limit.** The daily and monthly loss baselines are
+  persisted with the account, so restarting the process after a bad morning does not
+  hand back the allowance. Same rule as keeping risk out of agent prompts, applied to
+  the process lifecycle.
 - **Never forward-fill price.** Gaps stay gaps. Invented candles produce real backtest
   profits.
 - **No gross-returns view exists.** Costs are applied always, with no flag to disable
@@ -208,6 +213,8 @@ src/desk/
   store/              OHLCVFrame, parquet cache, staleness
   risk/               fail-closed sizing and the limit table
   paper/simulator.py  the one bar-stepping simulator
+  paper/engine.py     the live driver; same arithmetic, different bar source
+  paper/account.py    SQLite accounts, journal and refusal log
   backtest/           a driver over the simulator, plus the cost model
   research/           sweeps and walk-forward, both with trial accounting
   validation/         deflated Sharpe, PBO, minimum backtest length
@@ -228,7 +235,7 @@ web/                         the chart shell
 
 ```bash
 uv sync
-uv run pytest                               # 277 passing, 6 skipped
+uv run pytest                               # 289 passing, 6 skipped
 uv run uvicorn desk.api.app:app --port 8787 # binds 127.0.0.1
 cd web && npm install && npm run dev
 ```
@@ -279,11 +286,16 @@ Known gaps, stated rather than buried:
 **Research harness, working. Trading desk, not yet.**
 
 Live: the metrics spine, crypto adapter with pagination past the exchange's 1000-bar
-cap, risk engine, one simulator driving both backtest and paper, parameter sweeps and
-walk-forward with cumulative trial accounting, and a localhost API.
+cap, risk engine, one simulator driving both backtest and paper, the paper engine with
+SQLite accounts and a journal, parameter sweeps and walk-forward with cumulative trial
+accounting, and a localhost API.
 
-Next: the paper engine's account layer and persistence, then supply/demand zones and
-Fibonacci, then the US and NSE adapters that will exercise the degradation contract for
-the first time.
+The paper engine is verified against the backtest on real data, not only in fixtures:
+6000 BTC/USDT 4h bars through twelve overlapping poller calls returned net −18,679.06
+against the backtest's −18,679.0633950872, with 263 trades on both sides and 7,500
+re-sent bars correctly skipped.
+
+Next: supply/demand zones and Fibonacci, the chart desk, then the US and NSE adapters
+that will exercise the degradation contract for the first time.
 
 Private repository. Contains personal risk parameters and original strategy work.
