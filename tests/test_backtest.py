@@ -208,3 +208,79 @@ def test_an_intent_before_atr_is_seeded_is_refused_not_silently_poisoned():
     assert value.trades[0].entry_index == frame.data.index[30]
     assert math.isfinite(value.equity.iloc[-1])
     assert not value.equity.isna().any()
+
+
+def test_a_stop_inside_an_opening_gap_fills_at_the_open_not_the_stop():
+    """A long stopped out by a gap-down does not get the stop price.
+
+    The open is the bar's first price, so a level the bar gapped through
+    resolves there. Filling at the stop instead hands back the gap for free,
+    which flatters every gapped exit. Crypto hides this: BTC daily bars open
+    within 0.04% of the prior close at the 95th percentile, because the market
+    never shuts. NSE and US equities gap at every session open, and swing
+    timeframes are where overnight gaps dominate.
+    """
+    rows = [
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1.0}
+    ] * 20
+    # Bar 20 gaps far below the stop and never trades back up to it.
+    rows = rows + [
+        {"open": 90.0, "high": 91.0, "low": 88.0, "close": 90.5, "volume": 1.0},
+        {"open": 90.5, "high": 91.0, "low": 90.0, "close": 90.5, "volume": 1.0},
+    ]
+    frame = frame_from_rows(rows)
+    intent = Intent(
+        index=frame.data.index[19], side=Side.LONG,
+        entry=100.0, stop=98.0, target=110.0,
+    )
+
+    result = run_backtest(frame, [intent], costs=ZERO_COSTS, starting_equity=100_000.0)
+    assert result.is_ok
+    trade = result.value.trades[0]
+    assert trade.outcome == "stop"
+    # The gap, not the stop. The difference here is 8 points per unit.
+    assert trade.exit == pytest.approx(90.0)
+    assert trade.exit != pytest.approx(98.0)
+
+
+def test_a_target_inside_an_opening_gap_fills_at_the_open_too():
+    """Gaps cut both ways, and modelling only the adverse half is its own bias."""
+    rows = [
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1.0}
+    ] * 20
+    rows = rows + [
+        {"open": 115.0, "high": 116.0, "low": 114.0, "close": 115.5, "volume": 1.0},
+        {"open": 115.5, "high": 116.0, "low": 115.0, "close": 115.5, "volume": 1.0},
+    ]
+    frame = frame_from_rows(rows)
+    intent = Intent(
+        index=frame.data.index[19], side=Side.LONG,
+        entry=100.0, stop=98.0, target=110.0,
+    )
+
+    result = run_backtest(frame, [intent], costs=ZERO_COSTS, starting_equity=100_000.0)
+    assert result.is_ok
+    trade = result.value.trades[0]
+    assert trade.outcome == "target"
+    assert trade.exit == pytest.approx(115.0)
+
+
+def test_a_short_stopped_by_a_gap_up_fills_at_the_open():
+    rows = [
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1.0}
+    ] * 20
+    rows = rows + [
+        {"open": 112.0, "high": 113.0, "low": 111.0, "close": 112.0, "volume": 1.0},
+        {"open": 112.0, "high": 113.0, "low": 111.0, "close": 112.0, "volume": 1.0},
+    ]
+    frame = frame_from_rows(rows)
+    intent = Intent(
+        index=frame.data.index[19], side=Side.SHORT,
+        entry=100.0, stop=102.0, target=90.0,
+    )
+
+    result = run_backtest(frame, [intent], costs=ZERO_COSTS, starting_equity=100_000.0)
+    assert result.is_ok
+    trade = result.value.trades[0]
+    assert trade.outcome == "stop"
+    assert trade.exit == pytest.approx(112.0)

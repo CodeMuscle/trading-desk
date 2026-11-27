@@ -78,6 +78,11 @@ class Fill:
 @dataclass(frozen=True, slots=True)
 class Bar:
     timestamp: pd.Timestamp
+    open: float
+    """Needed for gap fills, which is the whole reason it is here. A stop sitting
+    inside an opening gap does not fill at the stop; it fills at the open, which
+    is worse. Omitting the open silently grants the stop price on every gapped
+    exit."""
     high: float
     low: float
     close: float
@@ -174,10 +179,30 @@ class Simulator:
         position = replace(position, mae=mae, mfe=mfe)
         self.position = position
 
-        if hit_stop:
-            # Pessimistic when a bar touches both: without ticks the order is
-            # genuinely unknown, and this is the only reading that cannot
-            # flatter the result.
+        # The open is the first price of the bar, so a level the bar gapped
+        # through resolves there and at that price, before anything else the bar
+        # did. Gaps cut both ways and both directions are modelled: a stop
+        # inside the gap fills worse than the stop, and a target inside it fills
+        # better than the target.
+        gapped_stop = (
+            bar.open <= position.stop
+            if position.side is Side.LONG
+            else bar.open >= position.stop
+        )
+        gapped_target = (
+            bar.open >= position.target
+            if position.side is Side.LONG
+            else bar.open <= position.target
+        )
+
+        if gapped_stop:
+            exit_price, outcome = bar.open, "stop"
+        elif gapped_target:
+            exit_price, outcome = bar.open, "target"
+        elif hit_stop:
+            # Pessimistic when a bar touches both intrabar: without ticks the
+            # order is genuinely unknown, and this is the only reading that
+            # cannot flatter the result.
             exit_price, outcome = position.stop, "stop"
         elif hit_target:
             exit_price, outcome = position.target, "target"

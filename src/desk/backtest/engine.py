@@ -148,6 +148,7 @@ def run_backtest(
     atr_values = atr_result.value.to_numpy(dtype="float64")
 
     index = frame.data.index
+    open_ = frame.data["open"].to_numpy()
     high = frame.data["high"].to_numpy()
     low = frame.data["low"].to_numpy()
     close = frame.data["close"].to_numpy()
@@ -165,6 +166,7 @@ def run_backtest(
     for i, timestamp in enumerate(index):
         bar = Bar(
             timestamp=timestamp,
+            open=float(open_[i]),
             high=float(high[i]),
             low=float(low[i]),
             close=float(close[i]),
