@@ -1,6 +1,13 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  // `vite preview` inherits server.proxy, so the local preview of the demo
+  // build was proxying /api to the running engine and serving live account
+  // and journal JSON. That makes it a poor stand-in for the deploy, where no
+  // engine exists: the deploy verifier reported six exposed endpoints against
+  // a build that serves none of them. An empty proxy here makes preview behave
+  // like the host it is previewing.
+  preview: { proxy: {} },
   server: {
     port: 5173,
     strictPort: true,
