@@ -8,7 +8,7 @@ Zero paid data subscriptions · one Python metrics engine as the single source o
 a validation harness that has rejected every strategy it has been given, including the
 author's
 
-[![tests](https://img.shields.io/badge/tests-307%20passing%20%7C%206%20skipped-2FBF84?style=flat-square)](tests/)
+[![tests](https://img.shields.io/badge/tests-309%20passing%20%7C%206%20skipped-2FBF84?style=flat-square)](tests/)
 [![python](https://img.shields.io/badge/python-3.13-5B9BD5?style=flat-square)](pyproject.toml)
 [![engine](https://img.shields.io/badge/engine-pandas%203.1%20%2F%20numpy%202.5-5B9BD5?style=flat-square)](pyproject.toml)
 [![strategies enabled](https://img.shields.io/badge/strategies%20enabled-0-E8524F?style=flat-square)](#the-scoreboard)
@@ -176,6 +176,9 @@ writing them down.
 | Forming-bar processing | a provisional low locked in a stop permanently | idempotency then skips the corrected bar, so a transient wrong answer becomes final |
 | First-run backfill | 17 paper trades at a 70.6% win rate | a replay of an already-selected strategy, written into the journal as forward evidence |
 | Lag on backfilled bars | a two-month backfill read as a two-month-late poller | a column that cannot tell "late" from "backfilled" reads as a permanently broken desk |
+| Cache never checked for age | chart served two-day-old candles under a live header | the engine marked all 18 metrics stale; the UI drew that as a dimmer colour |
+| `scalars` shape unhandled in UI | `value_area` rendered as `-` | identical to what *unavailable* renders, in a project whose premise is that the difference is visible |
+| `dict_of_series` rendered lengths | `macd:300 signal:300 hist:300` | three identical bar counts wearing the names of three different numbers |
 
 ---
 
@@ -239,8 +242,8 @@ web/                         the chart shell
 
 ```bash
 uv sync
-uv run pytest                               # 307 passing, 6 skipped
-uv run uvicorn desk.api.app:app --port 8787 # binds 127.0.0.1
+uv run pytest                               # 309 passing, 6 skipped
+uv run python -m desk.api.app               # binds 127.0.0.1:8787
 cd web && npm install && npm run dev
 ```
 

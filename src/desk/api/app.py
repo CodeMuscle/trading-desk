@@ -8,6 +8,7 @@ never be reachable from the network.
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -40,8 +41,22 @@ def create_app(store: FrameStore, adapter: CryptoAdapter) -> FastAPI:
     app = FastAPI(title="Trading desk engine", version="0.1.0")
 
     def load(symbol: str, timeframe: str, limit: int):
+        """Serve from cache, but only while the cache is current.
+
+        The staleness check is the point. Without it a frame written once is
+        returned for as long as it holds enough bars, so the chart serves prices
+        from whenever the cache happened to be filled and keeps doing so
+        indefinitely. That is exactly what was happening: a desk showing
+        two-day-old candles under a live-looking header, with the engine
+        correctly reporting stale on all eighteen metrics into a UI that drew it
+        as a slightly dimmer colour.
+        """
         frame = store.get(adapter.info().venue, symbol, timeframe)
-        if frame is None or len(frame.data) < limit:
+        if (
+            frame is None
+            or len(frame.data) < limit
+            or frame.is_stale(datetime.now(timezone.utc))
+        ):
             frame = adapter.fetch_frame(symbol, timeframe, limit)
             store.put(frame)
         return frame
@@ -74,7 +89,7 @@ def create_app(store: FrameStore, adapter: CryptoAdapter) -> FastAPI:
     def ohlcv(
         symbol: str = Query("BTC/USDT"),
         timeframe: str = Query("4h"),
-        limit: int = Query(300, ge=1, le=2000),
+        limit: int = Query(300, ge=1, le=6000),
     ) -> dict[str, Any]:
         frame = load(symbol, timeframe, limit)
         data = frame.data.tail(limit)
@@ -100,7 +115,7 @@ def create_app(store: FrameStore, adapter: CryptoAdapter) -> FastAPI:
         name: str,
         symbol: str = Query("BTC/USDT"),
         timeframe: str = Query("4h"),
-        limit: int = Query(300, ge=1, le=2000),
+        limit: int = Query(300, ge=1, le=6000),
         length: int | None = None,
         fast: int | None = None,
         slow: int | None = None,

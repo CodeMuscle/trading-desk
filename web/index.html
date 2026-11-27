@@ -16,6 +16,7 @@
     .topbar {
       height: var(--topbar-h); flex: none; display: flex; align-items: center;
       gap: var(--space-3); padding: 0 var(--space-3);
+      justify-content: space-between;
       background: var(--surface-2); border-bottom: 1px solid var(--line-2);
       font-family: var(--font-mono); font-size: var(--fs-caption);
       font-variant-numeric: tabular-nums;
@@ -39,11 +40,39 @@
     }
     .mk { color: var(--ink-3); }
     .mv { color: var(--ink-1); font-variant-numeric: tabular-nums; text-align: right; }
-    .mv.stale { color: var(--stale); background: var(--stale-hatch); padding: 0 3px; }
-    .mv.na {
-      color: var(--unavailable-fg); font-size: var(--fs-micro);
-      max-width: 150px; line-height: 1.3;
+    .mrow.is-stale { background: var(--stale-hatch); }
+    .mv .flag {
+      font-size: 9px; letter-spacing: 0.06em; color: var(--ground);
+      background: var(--caution); border-radius: var(--radius-sm);
+      padding: 1px 4px; vertical-align: 1px;
     }
+    .mv.na { color: var(--unavailable-fg); }
+    .mv .why {
+      display: block; font-size: var(--fs-micro); color: var(--ink-dim);
+      max-width: 170px; line-height: 1.3; white-space: normal;
+    }
+
+    /* Range and timeframe chips. Small, square-ish and monospaced: a terminal
+       control, not a consumer segmented picker. */
+    .controls { display: flex; gap: var(--space-1); align-items: center; }
+    .chip {
+      font: inherit; font-family: var(--font-mono); font-size: var(--fs-micro);
+      color: var(--ink-3); background: var(--surface-2);
+      border: 1px solid var(--line-2); border-radius: var(--radius-sm);
+      padding: 2px var(--space-2); cursor: pointer;
+      transition: color var(--dur-fast) var(--ease-out),
+                  background var(--dur-fast) var(--ease-out),
+                  border-color var(--dur-fast) var(--ease-out);
+    }
+    .chip:hover { color: var(--ink-1); border-color: var(--line-3); }
+    .chip.is-active {
+      color: var(--accent); border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .chip:focus-visible {
+      outline: var(--focus-ring-w) solid var(--focus-ring); outline-offset: 1px;
+    }
+    .csep { width: var(--space-3); }
     .boot-error {
       padding: var(--space-3); font-family: var(--font-mono);
       font-size: var(--fs-micro); color: var(--neg); white-space: pre-wrap;
@@ -53,7 +82,10 @@
 </head>
 <body>
   <div class="shell">
-    <div class="topbar"><span id="header">loading…</span></div>
+    <div class="topbar">
+      <span id="header">loading…</span>
+      <span id="controls" class="controls"></span>
+    </div>
     <div class="body">
       <div class="chartcell" id="chart"></div>
       <aside class="panel">

@@ -93,3 +93,65 @@ def test_the_registry_listing_exposes_every_metric_and_its_requirements(client):
     ema = next(m for m in body["metrics"] if m["name"] == "ema")
     assert ema["requires"] == ["ohlcv"]
     assert ema["defaults"] == {"length": 20}
+
+
+def test_a_stale_cached_frame_is_refetched_rather_than_served(tmp_path):
+    """Regression: the chart served two-day-old candles under a live header.
+
+    The cache was consulted for existence and bar count but never for age, so a
+    frame written once was returned for as long as it held enough bars. The
+    engine was honest about it, marking all eighteen metrics stale, and the UI
+    drew that as a slightly dimmer colour. The fix belongs here rather than in
+    the UI: a read API should not hand back data it knows is expired.
+    """
+    import dataclasses
+    from datetime import datetime, timedelta, timezone
+
+    adapter = CryptoAdapter(client=FakeCcxt())
+    fetches = {"n": 0}
+    real = adapter.fetch_frame
+
+    def counting(*args, **kwargs):
+        fetches["n"] += 1
+        return real(*args, **kwargs)
+
+    adapter.fetch_frame = counting  # type: ignore[method-assign]
+
+    fresh = real("BTC/USDT", "1h", 60)
+    stale = dataclasses.replace(
+        fresh,
+        as_of=datetime.now(timezone.utc)
+        - timedelta(seconds=fresh.timeframe_seconds() * 10),
+    )
+
+    store = FrameStore(root=tmp_path / "frames")
+    store.put(stale)
+
+    client = TestClient(create_app(store=store, adapter=adapter))
+    response = client.get(
+        "/ohlcv", params={"symbol": "BTC/USDT", "timeframe": "1h", "limit": 50}
+    )
+    assert response.status_code == 200
+    # The cached frame already holds more bars than the request needs, so only
+    # the age check can explain the refetch.
+    assert fetches["n"] == 1
+
+
+def test_a_fresh_cached_frame_is_served_without_refetching(tmp_path):
+    """The other half: the cache has to still be a cache."""
+    adapter = CryptoAdapter(client=FakeCcxt())
+    fetches = {"n": 0}
+    real = adapter.fetch_frame
+
+    def counting(*args, **kwargs):
+        fetches["n"] += 1
+        return real(*args, **kwargs)
+
+    adapter.fetch_frame = counting  # type: ignore[method-assign]
+
+    store = FrameStore(root=tmp_path / "frames")
+    store.put(real("BTC/USDT", "1h", 60))
+
+    client = TestClient(create_app(store=store, adapter=adapter))
+    client.get("/ohlcv", params={"symbol": "BTC/USDT", "timeframe": "1h", "limit": 50})
+    assert fetches["n"] == 0
