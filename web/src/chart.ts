@@ -245,6 +245,7 @@ export function drawZones(
   state: DeskState,
   zones: Zone[],
   lastPrice?: number,
+  labels = false,
   keep = 6,
 ): void {
   for (const line of state.zoneLines) state.chart.removePrimitive(line);
@@ -292,10 +293,18 @@ export function drawZones(
           lineWidth: 1,
           dashed: zone.tested,
           id: `zone-${n++}`,
-          // Only the band's upper edge is labelled. Labelling both puts two
-          // pills a few pixels apart saying the same thing.
+          // Off by default. Each label is a pill on the price axis, and six
+          // zones meant up to six of them stacked over the scale, hiding the
+          // prices the axis exists to show. The line already carries what
+          // matters without reading anything: colour says supply or demand,
+          // dashed says it has been tested. The strength and the exact band
+          // are in the metrics panel, where there is room for them.
+          //
+          // Only the upper edge is labelled when they are on, because
+          // labelling both puts two pills a few pixels apart saying the same
+          // thing.
           label:
-            price === zone.top
+            labels && price === zone.top
               ? `${zone.kind} ${zone.departure_atr.toFixed(1)}ATR${
                   zone.tested ? " tested" : ""
                 }`
@@ -633,6 +642,7 @@ export async function boot(
       state,
       view.layers.zones ? zoneResponse?.zones ?? [] : [],
       bars.at(-1)?.close,
+      view.layers.labels,
     );
 
     const fibResponse = responses.find((r) => r.name === "fibonacci_levels");
@@ -673,14 +683,17 @@ export async function boot(
       // one OFF only removes what is already on screen, so it is immediate.
       // Treating both the same made hiding a layer cost a round trip to delete
       // something the page already had.
-      const turnedOn = (["ema", "vwap", "zones", "fib", "volume"] as const).some(
-        (key) => next.layers[key] && !view.layers[key],
-      );
+      const turnedOn = (
+        ["ema", "vwap", "zones", "fib", "volume"] as const
+      ).some((key) => next.layers[key] && !view.layers[key]);
+      // Labels change what is drawn on existing lines, so they need a redraw
+      // either way rather than only when switched on.
+      const labelsChanged = next.layers.labels !== view.layers.labels;
       view = next;
       updateRail(view);
       if (kindChanged) setKind(view.kind);
       applyLayers();
-      if (turnedOn) await load();
+      if (turnedOn || labelsChanged) await load();
     });
   }
 
@@ -758,6 +771,16 @@ export async function boot(
       controls.append(node);
     }
   }
+
+  // A diagnosis handle, not an API. The desk is a single-user app on loopback,
+  // and the alternative to this is inferring interaction behaviour from
+  // screenshots, which is how the pan-while-drawing question went unanswered
+  // for several rounds. Nothing in the app reads it.
+  (window as unknown as { __desk?: unknown }).__desk = {
+    chart: state.chart,
+    drawings: () => drawings?.controller ?? null,
+    range: () => state.chart.getVisibleLogicalRange(),
+  };
 
   await refreshDesk();
   await load();
