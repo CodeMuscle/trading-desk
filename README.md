@@ -240,7 +240,7 @@ docs/superpowers/findings/   every validation run and its verdict
 design/tokens.css            the Slate and Ember design system, 104 tokens
 reference/pine/              the original TradingView strategies
 tools/                       golden-value cross-check against openalgo-charts
-web/                         the chart shell
+web/                         the chart desk: left rail, chart, metrics, paper panel
 ```
 
 ---

@@ -21,6 +21,12 @@ import {
   SYMBOLS,
 } from "./api";
 import { renderDesk } from "./desk";
+import {
+  DEFAULT_VIEW,
+  renderRail,
+  type SeriesKind,
+  type ViewState,
+} from "./rail";
 
 export type DeskState = {
   chart: Chart;
@@ -32,6 +38,7 @@ export type DeskState = {
   /** Tracked so a reload removes the previous set rather than stacking a new
    *  one on top of it, which is how a chart ends up with forty lines on it. */
   zoneLines: PriceLine[];
+  fibLines: PriceLine[];
 };
 
 /** Follows design/tokens.css, which is dark-first and switches only on an
@@ -45,14 +52,14 @@ function token(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-export function mount(container: HTMLElement): DeskState {
+export function mount(container: HTMLElement, kind: SeriesKind = "candlestick"): DeskState {
   const chart = createChart(container, {
     theme: isDark() ? darkTheme : lightTheme,
   });
-  const candles = chart.addSeries("candlestick");
+  const candles = chart.addSeries(kind);
   return {
     chart, candles, overlays: new Map(),
-    markers: candles.createMarkers(), zoneLines: [],
+    markers: candles.createMarkers(), zoneLines: [], fibLines: [],
   };
 }
 
@@ -227,6 +234,35 @@ export function drawZones(state: DeskState, zones: Zone[], keep = 6): void {
   }
 }
 
+/** Fibonacci retracements as levels on the price scale.
+ *
+ * Drawn in the annotation colour rather than a data colour, because these are
+ * lines a person chose to look at and not a measurement of the market. Mixing
+ * them into the green and red reserved for price would make a drawn level look
+ * like a reading.
+ */
+export function drawFib(state: DeskState, levels: Record<string, number>): void {
+  for (const line of state.fibLines) state.chart.removePrimitive(line);
+  state.fibLines = [];
+
+  const colour = token("--annotate") || "#9B8BD9";
+  for (const [ratio, price] of Object.entries(levels)) {
+    // 0.000 and 1.000 are the anchors themselves, already visible as the swing
+    // they were taken from. Redrawing them adds two lines and no information.
+    if (ratio === "0.000" || ratio === "1.000") continue;
+    state.fibLines.push(
+      state.chart.addPriceLine({
+        price,
+        color: colour,
+        lineWidth: 1,
+        dashed: true,
+        id: `fib-${ratio}`,
+        label: ratio,
+      }),
+    );
+  }
+}
+
 /** Entry and exit markers for every trade in the journal.
  *
  * Coloured by the trade's net, never by its outcome. A target that filled
@@ -270,10 +306,16 @@ export async function boot(
   header: HTMLElement,
 ): Promise<void> {
   let symbol = "BTC/USDT";
-  const state = mount(container);
+  let timeframe = "4h";
+  let limit = DEFAULT_BARS;
+  let view: ViewState = { ...DEFAULT_VIEW, layers: { ...DEFAULT_VIEW.layers } };
+
+  let state = mount(container, view.kind);
   const deskRoot = document.getElementById("desk");
+  const railRoot = document.getElementById("rail");
   let selectedAccount: string | null = null;
   let markers: SeriesMarker[] = [];
+  let bars: Bar[] = [];
 
   async function refreshDesk(): Promise<void> {
     if (!deskRoot) return;
@@ -283,11 +325,26 @@ export async function boot(
     });
     selectedAccount = result.account;
     markers = tradeMarkers(result.trades);
-    state.markers.setMarkers(markers);
+    state.markers.setMarkers(view.layers.trades ? markers : []);
   }
 
-  async function load(timeframe: string, limit: number): Promise<void> {
-    const [{ bars, venue }, e20, e50, e200, vwap] = await Promise.all([
+  /** Swap the price series without refetching.
+   *
+   * The series owns the drawn bars, so changing its type means replacing it.
+   * Its markers primitive goes with it, which is why the markers are reapplied
+   * rather than assumed to survive. Refetching here instead would spend a
+   * fourteen-second download to change how the same bars are shaded. */
+  function setKind(kind: SeriesKind): void {
+    state.candles.remove();
+    const replacement = state.chart.addSeries(kind);
+    state.candles = replacement;
+    state.markers = replacement.createMarkers();
+    replacement.setData(bars);
+    state.markers.setMarkers(view.layers.trades ? markers : []);
+  }
+
+  async function load(): Promise<void> {
+    const [{ bars: fetched, venue }, e20, e50, e200, vwap] = await Promise.all([
       api.ohlcv(symbol, timeframe, limit),
       api.metric("ema", symbol, timeframe, { length: 20 }, limit),
       api.metric("ema", symbol, timeframe, { length: 50 }, limit),
@@ -295,14 +352,18 @@ export async function boot(
       api.metric("session_vwap", symbol, timeframe, {}, limit),
     ]);
 
-    state.candles.setData(bars as Bar[]);
-    // setData clears markers, so they are reapplied after every reload rather
-    // than only when the account changes.
-    state.markers.setMarkers(markers);
-    overlay(state, "ema200", e200, token("--ink-dim") || "#555");
-    overlay(state, "ema50", e50, token("--accent") || "#D98A3D");
-    overlay(state, "ema20", e20, token("--info") || "#5B9BD5");
-    overlay(state, "vwap", vwap, token("--annotate") || "#9B8BD9");
+    bars = fetched as Bar[];
+    state.candles.setData(bars);
+    state.markers.setMarkers(view.layers.trades ? markers : []);
+
+    if (view.layers.ema) {
+      overlay(state, "ema200", e200, token("--ink-dim") || "#555");
+      overlay(state, "ema50", e50, token("--accent") || "#D98A3D");
+      overlay(state, "ema20", e20, token("--info") || "#5B9BD5");
+    }
+    if (view.layers.vwap) {
+      overlay(state, "vwap", vwap, token("--annotate") || "#9B8BD9");
+    }
 
     const last = bars.at(-1);
     const first = bars[0];
@@ -324,19 +385,53 @@ export async function boot(
     panel.replaceChildren(...responses.map(metricRow));
 
     const zoneResponse = responses.find((r) => r.name === "supply_demand_zones");
-    drawZones(state, zoneResponse?.zones ?? []);
+    drawZones(state, view.layers.zones ? zoneResponse?.zones ?? [] : []);
+
+    const fibResponse = responses.find((r) => r.name === "fibonacci_levels");
+    drawFib(state, view.layers.fib ? fibResponse?.scalars ?? {} : {});
   }
 
-  // Range and timeframe are controls rather than constants. The chart opened on
-  // 300 bars with no way to ask for more, which on 4h is seven weeks: the
-  // engine pages past the exchange's 1000-bar cap, so the shallow history was
-  // a UI default and not a venue limit.
+  /** Apply a layer change without refetching.
+   *
+   * Hiding a layer removes what is drawn and nothing else: the engine still
+   * computed it and the panel still reports it. A toggle that skipped the
+   * computation would make a hidden level and an absent one look identical,
+   * which is the same confusion the degradation contract exists to prevent. */
+  function applyLayers(): void {
+    state.markers.setMarkers(view.layers.trades ? markers : []);
+    if (!view.layers.ema) {
+      for (const key of ["ema20", "ema50", "ema200"]) {
+        state.overlays.get(key)?.remove();
+        state.overlays.delete(key);
+      }
+    }
+    if (!view.layers.vwap) {
+      state.overlays.get("vwap")?.remove();
+      state.overlays.delete("vwap");
+    }
+  }
+
+  if (railRoot) {
+    const drawRail = () =>
+      renderRail(railRoot, view, async (next) => {
+        const kindChanged = next.kind !== view.kind;
+        const needsRedraw =
+          next.layers.ema !== view.layers.ema ||
+          next.layers.vwap !== view.layers.vwap ||
+          next.layers.zones !== view.layers.zones ||
+          next.layers.fib !== view.layers.fib;
+        view = next;
+        drawRail();
+        if (kindChanged) setKind(view.kind);
+        applyLayers();
+        if (needsRedraw) await load();
+      });
+    drawRail();
+  }
+
   const controls = document.getElementById("controls");
   if (controls) {
     const timeframes = ["1h", "4h", "1d"];
-    let timeframe = "4h";
-    let limit = DEFAULT_BARS;
-
     const render = () => {
       controls.replaceChildren();
       for (const value of SYMBOLS) {
@@ -344,7 +439,7 @@ export async function boot(
           chip(value.replace("/USDT", ""), value === symbol, async () => {
             symbol = value;
             render();
-            await load(timeframe, limit);
+            await load();
           }),
         );
       }
@@ -353,7 +448,7 @@ export async function boot(
         controls.append(chip(value, value === timeframe, async () => {
           timeframe = value;
           render();
-          await load(timeframe, limit);
+          await load();
         }));
       }
       controls.append(el("span", "csep"));
@@ -361,7 +456,7 @@ export async function boot(
         controls.append(chip(label, value === limit, async () => {
           limit = value;
           render();
-          await load(timeframe, limit);
+          await load();
         }));
       }
     };
@@ -369,7 +464,7 @@ export async function boot(
   }
 
   await refreshDesk();
-  await load("4h", DEFAULT_BARS);
+  await load();
 }
 
 function el(tag: string, className: string): HTMLElement {

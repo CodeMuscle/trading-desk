@@ -118,7 +118,8 @@
   --control-sm:        32px;
   --control-md:        36px;
   --control-lg:        44px;
-  --rail-w:            56px;   /* left tool rail */
+  --rail-w:            78px;   /* left tool rail; wide enough for a word, because
+                                  an icon-only rail needs a legend nobody reads */
   --topbar-h:          52px;
 
   /* ---- motion: fast. Anything over 200ms feels laggy in a terminal. ---- */
